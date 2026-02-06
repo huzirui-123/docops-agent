@@ -1,0 +1,14 @@
+forbid_tables: true
+forbid_numpr: true
+numpr_direct_only: true
+run_font_latin: BUSINESS_DEFAULT_LATIN
+run_font_east_asia: BUSINESS_DEFAULT_EAST_ASIA
+run_size_pt: 12
+line_spacing_twips: 360
+first_line_indent_twips: 420
+twips_tolerance: 20
+trim_leading_spaces: true
+trim_chars:
+  - " "
+  - "\t"
+  - "\u3000"
