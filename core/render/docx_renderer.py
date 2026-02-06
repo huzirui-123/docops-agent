@@ -63,10 +63,19 @@ def render_docx(
             touched_runs=touched_runs,
             unsupported_mode=unsupported_mode,
         )
+        partial_output = RenderOutput(
+            document=document,
+            parse_result=parse_result,
+            template_fields=template_fields,
+            replace_report=replace_report,
+            missing_fields=missing_fields_report,
+            format_report=empty_format_report(),
+        )
         raise TemplateError(
             "Unsupported placeholders found in template",
             result=parse_result,
             replace_report=replace_report,
+            render_output=partial_output,
         )
 
     run_lookup = _build_run_lookup(document)

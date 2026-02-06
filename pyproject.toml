@@ -11,6 +11,8 @@ python = "^3.11"
 python-docx = "^1.2.0"
 pydantic = "^2.8.2"
 PyYAML = "^6.0.2"
+typer = "^0.12.3"
+click = "<8.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2.0"
@@ -43,3 +45,6 @@ testpaths = ["tests"]
 [build-system]
 requires = ["poetry-core>=1.9.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+docops = "apps.cli.main:main"

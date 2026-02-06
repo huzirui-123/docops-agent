@@ -19,10 +19,12 @@ class TemplateError(Exception):
         *,
         result: ParseResult | None = None,
         replace_report: ReplaceReport | None = None,
+        render_output: RenderOutput | None = None,
     ) -> None:
         super().__init__(message)
         self.result = result
         self.replace_report = replace_report
+        self.render_output = render_output
 
 
 class MissingRequiredFieldsError(Exception):
