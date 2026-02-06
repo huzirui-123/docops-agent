@@ -85,12 +85,6 @@ def run_command(
 
     if existing and not explicit_overwrite:
         typer.echo("ERROR: outputs already exist and --no-overwrite is enabled.")
-        _safe_write_exit1_fallback(
-            paths,
-            "OverwriteDisabled",
-            "output files already exist",
-            "precheck",
-        )
         raise typer.Exit(code=1)
 
     output: RenderOutput | None = None

@@ -192,7 +192,10 @@ def test_cli_no_overwrite_returns_1() -> None:
         out_dir.mkdir()
         _write_docx(template)
         _write_task(task, {"meeting_title": "Kickoff"})
-        (out_dir / "out.docx").write_bytes(b"exists")
+        existing_docx = b"existing-docx-content"
+        existing_replace = '{"marker":"do-not-overwrite"}'
+        (out_dir / "out.docx").write_bytes(existing_docx)
+        (out_dir / "out.replace_log.json").write_text(existing_replace, encoding="utf-8")
 
         result = runner.invoke(
             app,
@@ -212,6 +215,10 @@ def test_cli_no_overwrite_returns_1() -> None:
 
         assert result.exit_code == 1
         assert "--no-overwrite" in result.stdout
+        assert (out_dir / "out.docx").read_bytes() == existing_docx
+        assert (out_dir / "out.replace_log.json").read_text(encoding="utf-8") == existing_replace
+        assert not (out_dir / "out.missing_fields.json").exists()
+        assert not (out_dir / "out.format_report.json").exists()
 
 
 def test_cli_default_overwrite_prints_info() -> None:

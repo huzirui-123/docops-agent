@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,14 +120,13 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _atomic_write_docx(path: Path, document) -> None:
-    with tempfile.NamedTemporaryFile(
-        mode="wb",
+    fd, raw_tmp_path = tempfile.mkstemp(
         dir=path.parent,
-        delete=False,
         prefix=f"{path.name}.",
         suffix=".tmp",
-    ) as tmp:
-        tmp_path = Path(tmp.name)
+    )
+    os.close(fd)
+    tmp_path = Path(raw_tmp_path)
 
     try:
         document.save(str(tmp_path))
