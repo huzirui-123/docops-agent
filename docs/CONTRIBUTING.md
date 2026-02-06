@@ -11,6 +11,7 @@
 6. 质量门禁：每张卡必须执行并通过 `poetry run ruff check . && poetry run mypy . && poetry run pytest` 才允许 commit。
 7. core/ 纯逻辑层不得依赖 fastapi/typer；apps/ 只做入口。
 8. 不允许为了“凑过测试”而删测试/放宽规则/降低校验。
+9. 孤立 】 / 未闭合 【 只在 strict=True 才抛错；strict=False 只记录 unsupported 并继续解析。
 
 ## 可持续开发强制规则（必须）
 1. 任何对 docx XML 的操作必须封装在 core/utils/docx_xml.py。
