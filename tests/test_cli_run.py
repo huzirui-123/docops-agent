@@ -10,7 +10,9 @@ from apps.cli.main import app
 runner = CliRunner()
 
 
-def _write_docx(path: Path, *, cross_run: bool = False, with_table: bool = False) -> None:
+def _write_docx(
+    path: Path, *, cross_run: bool = False, with_table: bool = False, symbol_font: bool = False
+) -> None:
     from docx import Document
 
     document = Document()
@@ -19,7 +21,9 @@ def _write_docx(path: Path, *, cross_run: bool = False, with_table: bool = False
         table.cell(0, 0).paragraphs[0].text = "table"
     else:
         paragraph = document.add_paragraph()
-        paragraph.add_run("【MEETING_TITLE】")
+        run = paragraph.add_run("【MEETING_TITLE】")
+        if symbol_font:
+            run.font.name = "Symbol"
         if cross_run:
             paragraph.add_run(" and ")
             paragraph.add_run("【BA")
@@ -279,3 +283,36 @@ def test_cli_warn_mode_prints_warning() -> None:
 
         assert result.exit_code == 0
         assert "WARNING: unsupported placeholders detected" in result.stdout
+
+
+def test_cli_debug_dump_writes_debug_json() -> None:
+    with runner.isolated_filesystem() as tmp:
+        root = Path(tmp)
+        template = root / "template.docx"
+        task = root / "task.json"
+        out_dir = root / "out"
+        _write_docx(template, symbol_font=True)
+        _write_task(task, {"meeting_title": "Kickoff"})
+
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                "--template",
+                str(template),
+                "--task",
+                str(task),
+                "--skill",
+                "meeting_notice",
+                "--out-dir",
+                str(out_dir),
+                "--debug-dump",
+            ],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads((out_dir / "out.debug.json").read_text(encoding="utf-8"))
+        assert "post_pipeline" in payload
+        assert "suspicious_runs" in payload["post_pipeline"]
+        assert "pre_pipeline" in payload
+        assert payload["pre_pipeline"]["suspicious_runs"]

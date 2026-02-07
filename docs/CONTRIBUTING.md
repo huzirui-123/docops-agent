@@ -14,6 +14,7 @@
 9. 孤立 】 / 未闭合 【 只在 strict=True 才抛错；strict=False 只记录 unsupported 并继续解析。
 10. numPr 仅检查/清理直接 pPr.numPr，不追溯样式继承。
 11. 当 forbid_tables=true 时，validator 仅记录 TABLE_FORBIDDEN 且跳过 table cell 其它校验；fixer 不尝试修复 tables。
+12. policy 中字体值必须是可写入 docx 的真实字体名；如存在历史 BUSINESS_DEFAULT_* 代号，必须在 policy loader 解析为真实字体后再进入 fixer/validator。
 
 ## 可持续开发强制规则（必须）
 1. 任何对 docx XML 的操作必须封装在 core/utils/docx_xml.py。

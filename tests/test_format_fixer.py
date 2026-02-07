@@ -15,8 +15,8 @@ def _policy(**overrides) -> FormatPolicy:
         "forbid_tables": False,
         "forbid_numpr": True,
         "numpr_direct_only": True,
-        "run_font_latin": "BUSINESS_DEFAULT_LATIN",
-        "run_font_east_asia": "BUSINESS_DEFAULT_EAST_ASIA",
+        "run_font_latin": "Calibri",
+        "run_font_east_asia": "宋体",
         "run_size_pt": 12,
         "line_spacing_twips": 360,
         "first_line_indent_twips": 420,
@@ -57,8 +57,8 @@ def test_fixer_does_not_modify_non_touched_runs() -> None:
 
     fix_document(document, _policy(), touched_runs={"p0:r0"})
 
-    assert touched.font.name == "BUSINESS_DEFAULT_LATIN"
-    assert get_run_east_asia_font(touched) == "BUSINESS_DEFAULT_EAST_ASIA"
+    assert touched.font.name == "Calibri"
+    assert get_run_east_asia_font(touched) == "宋体"
     assert untouched.font.name is None
     assert untouched.font.size is None
 

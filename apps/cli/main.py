@@ -4,20 +4,23 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
 import typer
 from docx import Document
 
 from apps.cli.io import (
     OutputPaths,
+    build_debug_output_path,
     build_output_paths,
     existing_output_files,
+    write_debug_dump_atomic,
     write_fallback_json_atomic,
     write_render_output_atomic,
 )
 from core.format.policy_loader import load_policy
 from core.orchestrator.pipeline import run_task
+from core.render.debug_dump import DebugReport, collect_suspicious_runs
 from core.render.models import RenderOutput
 from core.skills.base import Skill
 from core.skills.meeting_notice import MeetingNoticeSkill
@@ -49,6 +52,13 @@ def run_command(
         typer.Option(
             "--no-overwrite",
             help="Fail when outputs already exist.",
+        ),
+    ] = False,
+    debug_dump: Annotated[
+        bool,
+        typer.Option(
+            "--debug-dump",
+            help="Write out.debug.json with suspicious symbol/font diagnostics.",
         ),
     ] = False,
 ) -> None:
@@ -88,6 +98,8 @@ def run_command(
         raise typer.Exit(code=1)
 
     output: RenderOutput | None = None
+    template_document = None
+    debug_pre_report: DebugReport | None = None
     exit_code = 1
     reason = "unexpected error"
     generic_error: Exception | None = None
@@ -102,6 +114,13 @@ def run_command(
         policy_model = load_policy(policy)
         failure_stage = "load_template"
         document = Document(str(template))
+        template_document = document
+        if debug_dump:
+            debug_pre_report = collect_suspicious_runs(
+                document=document,
+                touched_runs=set(),
+                stage="pre_pipeline",
+            )
         failure_stage = "pipeline"
 
         output = run_task(
@@ -179,6 +198,20 @@ def run_command(
             docx_write_error=docx_write_error,
         )
 
+    if debug_dump:
+        debug_payload = _build_debug_payload(
+            pre_report=debug_pre_report,
+            output=output,
+            template_document=template_document,
+        )
+        if debug_payload is not None:
+            debug_path = build_debug_output_path(out_dir)
+            try:
+                write_debug_dump_atomic(debug_path, debug_payload)
+            except Exception as exc:  # noqa: BLE001
+                typer.echo(f"ERROR: debug dump write failed: {exc}")
+                exit_code = 1
+
     if exit_code == 0:
         typer.echo("INFO: success")
     elif exit_code == 4:
@@ -219,6 +252,36 @@ def _safe_write_exit1_fallback(
         )
     except Exception:  # noqa: BLE001
         pass
+
+
+def _build_debug_payload(
+    *,
+    pre_report: DebugReport | None,
+    output: RenderOutput | None,
+    template_document: Any | None,
+) -> dict[str, Any] | None:
+    if output is not None:
+        touched_runs = set(output.replace_report.touched_runs)
+        post_report = collect_suspicious_runs(
+            document=output.document,
+            touched_runs=touched_runs,
+            stage="post_pipeline",
+        )
+    elif template_document is not None:
+        post_report = collect_suspicious_runs(
+            document=template_document,
+            touched_runs=set(),
+            stage="post_pipeline",
+        )
+    else:
+        return None
+
+    payload: dict[str, Any] = {
+        "post_pipeline": post_report.model_dump(mode="json"),
+    }
+    if pre_report is not None:
+        payload["pre_pipeline"] = pre_report.model_dump(mode="json")
+    return payload
 
 
 def main() -> None:

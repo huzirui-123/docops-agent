@@ -103,6 +103,20 @@ def get_run_east_asia_font(run: Run) -> str | None:
     return r_pr.rFonts.get(qn("w:eastAsia"))
 
 
+def get_run_font_info(run: Run) -> dict[str, str | None]:
+    """Return direct run font metadata for diagnostics."""
+
+    r_pr = run._r.rPr
+    r_fonts = None if r_pr is None else r_pr.rFonts
+    return {
+        "name": run.font.name,
+        "ascii": None if r_fonts is None else r_fonts.get(qn("w:ascii")),
+        "hAnsi": None if r_fonts is None else r_fonts.get(qn("w:hAnsi")),
+        "eastAsia": None if r_fonts is None else r_fonts.get(qn("w:eastAsia")),
+        "cs": None if r_fonts is None else r_fonts.get(qn("w:cs")),
+    }
+
+
 def set_run_fonts_and_size(run: Run, latin_font: str, east_asia_font: str, size_pt: int) -> None:
     """Set direct run latin/eastAsia fonts and font size."""
 

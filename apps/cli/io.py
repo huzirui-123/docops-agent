@@ -33,6 +33,12 @@ def build_output_paths(out_dir: Path) -> OutputPaths:
     )
 
 
+def build_debug_output_path(out_dir: Path) -> Path:
+    """Build optional debug dump output path under out_dir."""
+
+    return out_dir / "out.debug.json"
+
+
 def existing_output_files(paths: OutputPaths) -> list[Path]:
     """Return existing output files among fixed artifact paths."""
 
@@ -96,6 +102,13 @@ def write_fallback_json_atomic(
     _atomic_write_json(paths.replace_log, replace_payload)
     _atomic_write_json(paths.missing_fields, missing_payload)
     _atomic_write_json(paths.format_report, format_payload)
+
+
+def write_debug_dump_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """Write optional debug dump JSON atomically."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(path, payload)
 
 
 def _with_error_block(payload: dict[str, Any], error_block: dict[str, Any]) -> dict[str, Any]:

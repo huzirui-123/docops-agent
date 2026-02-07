@@ -16,12 +16,16 @@ Document Ops Agent MVP（无 LLM）。
 覆盖控制：
 `--force` 覆盖已有输出（默认行为，若覆盖会打印 INFO）。
 `--no-overwrite` 禁止覆盖，若输出已存在则返回退出码 `1`。
+`--debug-dump` 输出 `out.debug.json`，用于定位可疑符号/字体来源。
 
 固定输出四件套（`--out-dir` 下）：
 `out.docx`
 `out.replace_log.json`
 `out.missing_fields.json`
 `out.format_report.json`
+
+可选调试输出：
+`out.debug.json`
 
 退出码：
 `0` 成功
