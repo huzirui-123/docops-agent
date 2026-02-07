@@ -55,6 +55,7 @@ def test_cli_format_report_human_prints_summary_by_default() -> None:
         assert "result=FAILED" in result.stdout
         assert "issues:" in result.stdout
         assert "suggestion:" in result.stdout
+        assert "WARNING(format): format issues detected" in result.stdout
 
 
 def test_cli_format_report_json_suppresses_human_summary() -> None:
@@ -88,6 +89,8 @@ def test_cli_format_report_json_suppresses_human_summary() -> None:
         assert result.exit_code == 0
         assert "issues:" not in result.stdout
         assert "suggestion:" not in result.stdout
+        assert "WARNING(format):" not in result.stdout
+        assert "WARNING(unsupported):" not in result.stdout
 
 
 def test_cli_format_report_strict_failure_exit_code_unchanged() -> None:
@@ -119,4 +122,5 @@ def test_cli_format_report_strict_failure_exit_code_unchanged() -> None:
         )
 
         assert result.exit_code == 4
-
+        assert "format_mode=strict" in result.stdout
+        assert "result=FAILED" in result.stdout

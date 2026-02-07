@@ -145,6 +145,8 @@ def run_command(
         )
         raise typer.Exit(code=1)
     format_report_typed = cast(FormatReportMode, normalized_format_report)
+    show_human_summary = format_report_typed in {"human", "both"}
+    show_warnings = format_report_typed in {"human", "both"}
 
     if force and no_overwrite:
         typer.echo("ERROR: --force and --no-overwrite cannot be used together.")
@@ -212,7 +214,11 @@ def run_command(
             format_fix_mode=format_fix_mode_typed,
         )
 
-        if output.replace_report.summary.had_unsupported and unsupported_mode_typed == "warn":
+        if (
+            show_warnings
+            and output.replace_report.summary.had_unsupported
+            and unsupported_mode_typed == "warn"
+        ):
             typer.echo(
                 "WARNING(unsupported): unsupported placeholders detected "
                 f"(count={output.replace_report.summary.unsupported_count}, mode=warn)."
@@ -227,7 +233,7 @@ def run_command(
             exit_code = 4
             reason = "format validation failed"
         else:
-            if output.format_report.issues:
+            if show_warnings and output.format_report.issues:
                 typer.echo(
                     "WARNING(format): format issues detected "
                     f"({_format_issue_summary(output.format_report.issues)})."
@@ -246,7 +252,8 @@ def run_command(
         reason = "missing required fields"
         typer.echo(f"ERROR: {reason}")
         if (
-            output is not None
+            show_warnings
+            and output is not None
             and output.replace_report.summary.had_unsupported
             and unsupported_mode_typed == "warn"
         ):
@@ -261,13 +268,6 @@ def run_command(
         typer.echo(f"ERROR: {type(exc).__name__}: {exc}")
 
     docx_write_error: str | None = None
-
-    if (
-        output is not None
-        and output.format_report.summary is not None
-        and format_report_typed in {"human", "both"}
-    ):
-        typer.echo(render_format_summary(output, format_fix_mode_typed))
 
     if output is not None:
         try:
@@ -287,7 +287,8 @@ def run_command(
             )
 
         if (
-            export_suggested_policy is not None
+            output is not None
+            and export_suggested_policy is not None
             and policy_model is not None
             and docx_write_error is None
         ):
@@ -328,6 +329,9 @@ def run_command(
             except Exception as exc:  # noqa: BLE001
                 typer.echo(f"ERROR: debug dump write failed: {exc}")
                 exit_code = 1
+
+    if output is not None and output.format_report.summary is not None and show_human_summary:
+        typer.echo(render_format_summary(output, format_fix_mode_typed))
 
     if exit_code == 0:
         typer.echo("INFO: success")

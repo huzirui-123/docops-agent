@@ -33,8 +33,9 @@ Document Ops Agent MVP（无 LLM）。
 `safe`：仅做段落级轻修复（首行缩进/行距），不改文本/字体/表格结构。  
 `off` 模式下总是跳过 fix 与 validate。
 `human`：终端打印可读格式摘要。  
-`json`：终端不打印格式摘要（仍写四件套 JSON）。  
+`json`：终端不打印格式摘要，并抑制 WARNING（仍写四件套 JSON）。  
 `both`：打印可读摘要并保留现有 WARNING 行。
+human 摘要在 run 结束（四件套写盘后）统一打印一次。
 
 `out.format_report.json` 的 `summary` 包含：
 `template_observed` / `rendered_observed` / `diff` / `baseline` / `effective_policy_overrides` / `diagnostics`。
