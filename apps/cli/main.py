@@ -32,6 +32,7 @@ from core.utils.errors import MissingRequiredFieldsError, TemplateError
 app = typer.Typer(help="Document Ops Agent CLI", rich_markup_mode=None)
 UnsupportedMode = Literal["error", "warn"]
 FormatMode = Literal["report", "strict", "off"]
+FormatBaseline = Literal["template", "policy"]
 
 
 @app.callback()
@@ -48,6 +49,7 @@ def run_command(
     policy: Annotated[Path | None, typer.Option()] = None,
     unsupported_mode: Annotated[str, typer.Option()] = "error",
     format_mode: Annotated[str, typer.Option()] = "report",
+    format_baseline: Annotated[str, typer.Option()] = "template",
     force: Annotated[
         bool, typer.Option("--force", help="Overwrite outputs when they already exist.")
     ] = False,
@@ -94,6 +96,18 @@ def run_command(
         raise typer.Exit(code=1)
     format_mode_typed = cast(FormatMode, normalized_format_mode)
 
+    normalized_format_baseline = format_baseline.lower().strip()
+    if normalized_format_baseline not in {"template", "policy"}:
+        typer.echo("ERROR: --format-baseline must be one of: template, policy.")
+        _safe_write_exit1_fallback(
+            paths,
+            "ArgumentValidationError",
+            "invalid format_baseline",
+            "args",
+        )
+        raise typer.Exit(code=1)
+    format_baseline_typed = cast(FormatBaseline, normalized_format_baseline)
+
     if force and no_overwrite:
         typer.echo("ERROR: --force and --no-overwrite cannot be used together.")
         _safe_write_exit1_fallback(paths, "ArgumentConflict", "conflicting overwrite flags", "args")
@@ -112,6 +126,8 @@ def run_command(
     if existing and not explicit_overwrite:
         typer.echo("ERROR: outputs already exist and --no-overwrite is enabled.")
         raise typer.Exit(code=1)
+
+    typer.echo(f"INFO(format): baseline={format_baseline_typed}")
 
     output: RenderOutput | None = None
     template_document = None
@@ -146,6 +162,7 @@ def run_command(
             policy=policy_model,
             unsupported_mode=unsupported_mode_typed,
             format_mode=format_mode_typed,
+            format_baseline=format_baseline_typed,
         )
 
         if output.replace_report.summary.had_unsupported and unsupported_mode_typed == "warn":

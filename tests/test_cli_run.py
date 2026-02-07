@@ -149,6 +149,8 @@ def test_cli_format_failed_returns_4() -> None:
                 str(out_dir),
                 "--format-mode",
                 "strict",
+                "--format-baseline",
+                "policy",
             ],
         )
 

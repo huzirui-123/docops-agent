@@ -45,6 +45,8 @@ def test_cli_default_report_mode_does_not_block_format_failures() -> None:
                 "meeting_notice",
                 "--out-dir",
                 str(out_dir),
+                "--format-baseline",
+                "policy",
             ],
         )
 
@@ -78,6 +80,8 @@ def test_cli_strict_mode_blocks_with_exit_4() -> None:
                 str(out_dir),
                 "--format-mode",
                 "strict",
+                "--format-baseline",
+                "policy",
             ],
         )
 

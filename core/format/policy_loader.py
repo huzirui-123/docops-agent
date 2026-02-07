@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
+from typing import Any, cast
 
-import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
 from core.format.models import FormatPolicy
@@ -13,6 +14,7 @@ _FONT_TOKEN_MAP = {
     "BUSINESS_DEFAULT_LATIN": "Calibri",
     "BUSINESS_DEFAULT_EAST_ASIA": "宋体",
 }
+yaml = cast(Any, importlib.import_module("yaml"))
 
 
 def load_policy(path: Path | None = None) -> FormatPolicy:

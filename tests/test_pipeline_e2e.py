@@ -119,6 +119,7 @@ def test_pipeline_returns_failed_format_report_for_non_fixable_issue() -> None:
         skill=skill,
         policy=_policy(forbid_tables=True),
         unsupported_mode="warn",
+        format_baseline="policy",
     )
 
     assert output.format_report.passed is False

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,7 +19,7 @@ class FormatPolicy(BaseModel):
     run_font_east_asia: str
     run_size_pt: int
     line_spacing_twips: int
-    first_line_indent_twips: int
+    first_line_indent_twips: int | None
     twips_tolerance: int
     trim_leading_spaces: bool
     trim_chars: list[str]
@@ -69,6 +69,8 @@ class FormatSummary(BaseModel):
     rendered_observed: FormatObserved
     diff: FormatObservedDiff
     mode: Literal["report", "strict", "off"]
+    baseline: Literal["template", "policy"]
+    effective_policy_overrides: dict[str, Any] = Field(default_factory=dict)
     skipped: bool
 
 

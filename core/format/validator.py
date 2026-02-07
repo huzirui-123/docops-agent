@@ -23,6 +23,7 @@ def validate_document(
     - When forbid_tables is true, table presence is reported as non-fixable and
       table cell paragraphs are skipped for all other checks.
     - numPr checks only inspect direct pPr.numPr, not style inheritance.
+    - When first_line_indent_twips is None, first-line indent validation is skipped.
     """
 
     issues: list[FormatIssue] = []
@@ -77,21 +78,22 @@ def _validate_paragraph(
             )
         )
 
-    actual_indent = get_first_line_indent_twips(paragraph)
-    if actual_indent is not None and not _within_tolerance(
-        actual_indent, policy.first_line_indent_twips, policy.twips_tolerance
-    ):
-        issues.append(
-            FormatIssue(
-                code="FIRST_LINE_INDENT_MISMATCH",
-                message=(
-                    f"First-line indent twips mismatch: expected {policy.first_line_indent_twips}, "
-                    f"got {actual_indent}."
-                ),
-                paragraph_path=context.paragraph_path,
-                fixable=False,
+    if policy.first_line_indent_twips is not None:
+        actual_indent = get_first_line_indent_twips(paragraph)
+        if actual_indent is not None and not _within_tolerance(
+            actual_indent, policy.first_line_indent_twips, policy.twips_tolerance
+        ):
+            issues.append(
+                FormatIssue(
+                    code="FIRST_LINE_INDENT_MISMATCH",
+                    message=(
+                        "First-line indent twips mismatch: "
+                        f"expected {policy.first_line_indent_twips}, got {actual_indent}."
+                    ),
+                    paragraph_path=context.paragraph_path,
+                    fixable=False,
+                )
             )
-        )
 
     if policy.trim_leading_spaces and _has_leading_trim_chars(paragraph, set(policy.trim_chars)):
         issues.append(
