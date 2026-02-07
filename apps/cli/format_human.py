@@ -10,7 +10,10 @@ from core.render.models import RenderOutput
 
 
 def render_format_summary(
-    output: RenderOutput, format_fix_mode: Literal["none", "safe"]
+    output: RenderOutput,
+    format_fix_mode: Literal["none", "safe"],
+    *,
+    command_base: str,
 ) -> str:
     """Render one-screen human-readable format summary."""
 
@@ -30,6 +33,7 @@ def render_format_summary(
     if summary.skipped or summary.mode == "off":
         lines.append("format skipped: only replacement performed")
         lines.append("suggestion: none")
+        lines.append("next_cmd: none")
         return "\n".join(lines)
 
     template_has_tables = summary.template_observed.has_tables
@@ -65,6 +69,14 @@ def render_format_summary(
             issue_counter=issue_counter,
             summary=summary,
             template_indent=template_indent,
+        )
+    )
+    lines.append(
+        "next_cmd: "
+        + _build_next_cmd(
+            issue_counter=issue_counter,
+            summary=summary,
+            command_base=command_base,
         )
     )
     return "\n".join(lines)
@@ -108,6 +120,24 @@ def _build_suggestion(
                             return first.strip()
 
     return "review out.format_report.json diagnostics and adjust template/policy"
+
+
+def _build_next_cmd(
+    *, issue_counter: Counter[str], summary: FormatSummary, command_base: str
+) -> str:
+    if not issue_counter:
+        return "none"
+
+    if summary.mode != "strict":
+        return f"{command_base} --preset strict"
+
+    if "TABLE_FORBIDDEN" in issue_counter or "FIRST_LINE_INDENT_MISMATCH" in issue_counter:
+        return f"{command_base} --preset template"
+
+    if summary.baseline != "template":
+        return f"{command_base} --preset template"
+
+    return f"{command_base} --export-suggested-policy ./suggested_policy.yaml"
 
 
 def _to_string(value: object) -> str:

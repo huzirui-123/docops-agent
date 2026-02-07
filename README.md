@@ -17,6 +17,7 @@ Document Ops Agent MVP（无 LLM）。
 `--force` 覆盖已有输出（默认行为，若覆盖会打印 INFO）。
 `--no-overwrite` 禁止覆盖，若输出已存在则返回退出码 `1`。
 `--debug-dump` 输出 `out.debug.json`，用于定位可疑符号/字体来源。
+`--preset` 预设运行模式（`quick|template|strict`，默认 `quick`，推荐入口）。
 `--format-mode` 控制格式验收语义（`report|strict|off`，默认 `report`）。
 `--format-baseline` 控制验收基线（`template|policy`，默认 `template`）。
 `--format-fix-mode` 控制格式修复策略（`none|safe`，默认 `safe`；仅在非 off 模式生效）。
@@ -37,6 +38,11 @@ Document Ops Agent MVP（无 LLM）。
 `both`：打印可读摘要并保留现有 WARNING 行。
 human 摘要在 run 结束（四件套写盘后）统一打印一次。
 
+`quick`：`report + template baseline + safe fix + human summary`。  
+`template`：`report + template baseline + no fix + human summary`。  
+`strict`：`strict + policy baseline + safe fix + human summary`。
+`preset` 与高级参数（`--format-mode/--format-baseline/--format-fix-mode/--format-report`）不可混用。
+
 `out.format_report.json` 的 `summary` 包含：
 `template_observed` / `rendered_observed` / `diff` / `baseline` / `effective_policy_overrides` / `diagnostics`。
 其中 `diagnostics` 在 `report` 与 `strict` 模式下提供按 issue code 聚合的定位示例与建议。
@@ -52,6 +58,9 @@ human 摘要在 run 结束（四件套写盘后）统一打印一次。
 
 示例：
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out`
+`poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --preset quick`
+`poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --preset template`
+`poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --preset strict`
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --format-mode strict --format-baseline policy`
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --format-mode strict --format-baseline policy --format-fix-mode none`
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --format-report json`

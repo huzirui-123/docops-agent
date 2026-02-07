@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
 import typer
+from click.core import ParameterSource
 from docx import Document
 
 from apps.cli.format_human import render_format_summary
@@ -38,6 +39,15 @@ FormatMode = Literal["report", "strict", "off"]
 FormatBaseline = Literal["template", "policy"]
 FormatFixMode = Literal["none", "safe"]
 FormatReportMode = Literal["human", "json", "both"]
+PresetMode = Literal["quick", "template", "strict"]
+
+_PRESET_TO_FORMAT: dict[
+    PresetMode, tuple[FormatMode, FormatBaseline, FormatFixMode, FormatReportMode]
+] = {
+    "quick": ("report", "template", "safe", "human"),
+    "template": ("report", "template", "none", "human"),
+    "strict": ("strict", "policy", "safe", "human"),
+}
 
 
 @app.callback()
@@ -47,10 +57,12 @@ def cli_callback() -> None:
 
 @app.command("run")
 def run_command(
+    ctx: typer.Context,
     template: Annotated[Path, typer.Option(..., exists=True, dir_okay=False, file_okay=True)],
     task: Annotated[Path, typer.Option(..., exists=True, dir_okay=False, file_okay=True)],
     skill: Annotated[str, typer.Option(...)],
     out_dir: Annotated[Path, typer.Option()] = Path("."),
+    preset: Annotated[str, typer.Option()] = "quick",
     policy: Annotated[Path | None, typer.Option()] = None,
     unsupported_mode: Annotated[str, typer.Option()] = "error",
     format_mode: Annotated[str, typer.Option()] = "report",
@@ -98,7 +110,56 @@ def run_command(
         raise typer.Exit(code=1)
     unsupported_mode_typed = cast(UnsupportedMode, normalized_mode)
 
-    normalized_format_mode = format_mode.lower().strip()
+    normalized_preset = preset.lower().strip()
+    if normalized_preset not in {"quick", "template", "strict"}:
+        typer.echo("ERROR: --preset must be one of: quick, template, strict.")
+        _safe_write_exit1_fallback(
+            paths,
+            "ArgumentValidationError",
+            "invalid preset",
+            "args",
+        )
+        raise typer.Exit(code=1)
+    preset_typed = cast(PresetMode, normalized_preset)
+
+    preset_source = ctx.get_parameter_source("preset")
+    preset_explicit = preset_source == ParameterSource.COMMANDLINE
+    conflicting_flags = [
+        "format_mode",
+        "format_baseline",
+        "format_fix_mode",
+        "format_report",
+    ]
+    explicit_conflicts = [
+        flag
+        for flag in conflicting_flags
+        if ctx.get_parameter_source(flag) == ParameterSource.COMMANDLINE
+    ]
+    if preset_explicit and explicit_conflicts:
+        joined = ", ".join(f"--{name.replace('_', '-')}" for name in explicit_conflicts)
+        typer.echo(
+            "ERROR: --preset cannot be combined with explicit format flags "
+            f"({joined}). Use either preset or advanced flags."
+        )
+        raise typer.Exit(code=1)
+
+    effective_format_mode = format_mode
+    effective_format_baseline = format_baseline
+    effective_format_fix_mode = format_fix_mode
+    effective_format_report = format_report
+    if preset_explicit:
+        (
+            preset_format_mode,
+            preset_format_baseline,
+            preset_format_fix_mode,
+            preset_format_report,
+        ) = _PRESET_TO_FORMAT[preset_typed]
+        effective_format_mode = preset_format_mode
+        effective_format_baseline = preset_format_baseline
+        effective_format_fix_mode = preset_format_fix_mode
+        effective_format_report = preset_format_report
+
+    normalized_format_mode = effective_format_mode.lower().strip()
     if normalized_format_mode not in {"report", "strict", "off"}:
         typer.echo("ERROR: --format-mode must be one of: report, strict, off.")
         _safe_write_exit1_fallback(
@@ -110,7 +171,7 @@ def run_command(
         raise typer.Exit(code=1)
     format_mode_typed = cast(FormatMode, normalized_format_mode)
 
-    normalized_format_baseline = format_baseline.lower().strip()
+    normalized_format_baseline = effective_format_baseline.lower().strip()
     if normalized_format_baseline not in {"template", "policy"}:
         typer.echo("ERROR: --format-baseline must be one of: template, policy.")
         _safe_write_exit1_fallback(
@@ -122,7 +183,7 @@ def run_command(
         raise typer.Exit(code=1)
     format_baseline_typed = cast(FormatBaseline, normalized_format_baseline)
 
-    normalized_format_fix_mode = format_fix_mode.lower().strip()
+    normalized_format_fix_mode = effective_format_fix_mode.lower().strip()
     if normalized_format_fix_mode not in {"none", "safe"}:
         typer.echo("ERROR: --format-fix-mode must be one of: none, safe.")
         _safe_write_exit1_fallback(
@@ -134,7 +195,7 @@ def run_command(
         raise typer.Exit(code=1)
     format_fix_mode_typed = cast(FormatFixMode, normalized_format_fix_mode)
 
-    normalized_format_report = format_report.lower().strip()
+    normalized_format_report = effective_format_report.lower().strip()
     if normalized_format_report not in {"human", "json", "both"}:
         typer.echo("ERROR: --format-report must be one of: human, json, both.")
         _safe_write_exit1_fallback(
@@ -331,7 +392,17 @@ def run_command(
                 exit_code = 1
 
     if output is not None and output.format_report.summary is not None and show_human_summary:
-        typer.echo(render_format_summary(output, format_fix_mode_typed))
+        command_base = (
+            f"poetry run docops run --template {template} --task {task} "
+            f"--skill {skill} --out-dir {out_dir}"
+        )
+        typer.echo(
+            render_format_summary(
+                output,
+                format_fix_mode_typed,
+                command_base=command_base,
+            )
+        )
 
     if exit_code == 0:
         typer.echo("INFO: success")
