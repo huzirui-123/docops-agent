@@ -19,6 +19,7 @@ Document Ops Agent MVP（无 LLM）。
 `--debug-dump` 输出 `out.debug.json`，用于定位可疑符号/字体来源。
 `--format-mode` 控制格式验收语义（`report|strict|off`，默认 `report`）。
 `--format-baseline` 控制验收基线（`template|policy`，默认 `template`）。
+`--export-suggested-policy PATH` 导出建议策略 YAML（可用于后续 policy 调优）。
 
 `report`：产出文档与报告，格式问题只告警不拦截。  
 `strict`：格式不通过则返回退出码 `4`。  
@@ -26,6 +27,10 @@ Document Ops Agent MVP（无 LLM）。
 
 `template`：按模板本来样子验收（模板有表格则允许，缩进按模板主流值）。  
 `policy`：按 `policy.yaml` 进行严格验收。
+
+`out.format_report.json` 的 `summary` 包含：
+`template_observed` / `rendered_observed` / `diff` / `baseline` / `effective_policy_overrides` / `diagnostics`。
+其中 `diagnostics` 在 `report` 与 `strict` 模式下提供按 issue code 聚合的定位示例与建议。
 
 固定输出四件套（`--out-dir` 下）：
 `out.docx`
@@ -40,6 +45,7 @@ Document Ops Agent MVP（无 LLM）。
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out`
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --format-mode strict --format-baseline policy`
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --format-mode off`
+`poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --export-suggested-policy ./suggested_policy.yaml`
 
 退出码：
 `0` 成功

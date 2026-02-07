@@ -36,6 +36,12 @@ class FormatIssue(BaseModel):
     run_id: str | None = None
     fixable: bool
     fixed: bool = False
+    expected: Any | None = None
+    actual: Any | None = None
+    tolerance: int | None = None
+    template_value: Any | None = None
+    rendered_value: Any | None = None
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 class FormatObserved(BaseModel):
@@ -71,6 +77,7 @@ class FormatSummary(BaseModel):
     mode: Literal["report", "strict", "off"]
     baseline: Literal["template", "policy"]
     effective_policy_overrides: dict[str, Any] = Field(default_factory=dict)
+    diagnostics: dict[str, Any] | None = None
     skipped: bool
 
 

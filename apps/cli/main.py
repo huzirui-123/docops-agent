@@ -18,9 +18,11 @@ from apps.cli.io import (
     write_debug_dump_atomic,
     write_fallback_json_atomic,
     write_render_output_atomic,
+    write_suggested_policy_atomic,
 )
 from core.format.models import FormatIssue
 from core.format.policy_loader import load_policy
+from core.format.suggested_policy import build_suggested_policy
 from core.orchestrator.pipeline import run_task
 from core.render.debug_dump import DebugReport, collect_suspicious_runs
 from core.render.models import RenderOutput
@@ -50,6 +52,13 @@ def run_command(
     unsupported_mode: Annotated[str, typer.Option()] = "error",
     format_mode: Annotated[str, typer.Option()] = "report",
     format_baseline: Annotated[str, typer.Option()] = "template",
+    export_suggested_policy: Annotated[
+        Path | None,
+        typer.Option(
+            "--export-suggested-policy",
+            help="Write optional suggested policy YAML for template baseline tuning.",
+        ),
+    ] = None,
     force: Annotated[
         bool, typer.Option("--force", help="Overwrite outputs when they already exist.")
     ] = False,
@@ -118,7 +127,11 @@ def run_command(
     elif force:
         explicit_overwrite = True
 
-    existing = existing_output_files(paths)
+    extra_outputs: list[Path] = []
+    if export_suggested_policy is not None:
+        extra_outputs.append(export_suggested_policy)
+
+    existing = existing_output_files(paths, extra_paths=extra_outputs)
     if existing and explicit_overwrite:
         names = ", ".join(path.name for path in existing)
         typer.echo(f"INFO: overwriting existing outputs: {names}")
@@ -131,6 +144,8 @@ def run_command(
 
     output: RenderOutput | None = None
     template_document = None
+    template_for_suggested_policy = None
+    policy_model = None
     debug_pre_report: DebugReport | None = None
     exit_code = 1
     reason = "unexpected error"
@@ -147,6 +162,8 @@ def run_command(
         failure_stage = "load_template"
         document = Document(str(template))
         template_document = document
+        if export_suggested_policy is not None:
+            template_for_suggested_policy = Document(str(template))
         if debug_dump:
             debug_pre_report = collect_suspicious_runs(
                 document=document,
@@ -230,6 +247,25 @@ def run_command(
                 docx_write_error=docx_write_error,
                 base_output=output,
             )
+
+        if (
+            export_suggested_policy is not None
+            and policy_model is not None
+            and docx_write_error is None
+        ):
+            try:
+                source_document = (
+                    template_for_suggested_policy
+                    if template_for_suggested_policy is not None
+                    else output.document
+                )
+                suggested_policy = build_suggested_policy(source_document, policy_model)
+                write_suggested_policy_atomic(export_suggested_policy, suggested_policy)
+                typer.echo(f"INFO: wrote suggested policy to {export_suggested_policy}")
+            except Exception as exc:  # noqa: BLE001
+                exit_code = 1
+                reason = "write suggested policy failed"
+                typer.echo(f"ERROR: {reason}: {exc}")
     else:
         error_type = type(generic_error).__name__ if generic_error is not None else "UnknownError"
         error_message = str(generic_error) if generic_error is not None else reason

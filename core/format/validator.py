@@ -29,6 +29,7 @@ def validate_document(
     issues: list[FormatIssue] = []
 
     if policy.forbid_tables and document.tables:
+        table_count = len(document.tables)
         for table_index, _ in enumerate(document.tables):
             issues.append(
                 FormatIssue(
@@ -36,6 +37,7 @@ def validate_document(
                     message="Tables are forbidden by policy.",
                     paragraph_path=f"t{table_index}",
                     fixable=False,
+                    context={"table_count": table_count},
                 )
             )
 
@@ -92,6 +94,9 @@ def _validate_paragraph(
                     ),
                     paragraph_path=context.paragraph_path,
                     fixable=False,
+                    expected=policy.first_line_indent_twips,
+                    actual=actual_indent,
+                    tolerance=policy.twips_tolerance,
                 )
             )
 

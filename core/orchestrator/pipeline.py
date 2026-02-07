@@ -6,9 +6,14 @@ from typing import Literal
 
 from docx.document import Document as DocxDocument
 
+from core.format.diagnostics import build_format_diagnostics
 from core.format.fixer import fix_document
 from core.format.models import FormatPolicy, FormatReport, FormatSummary
-from core.format.observed import diff_observed, observe_document
+from core.format.observed import (
+    diff_observed,
+    dominant_first_line_indent_twips,
+    observe_document,
+)
 from core.format.validator import validate_document
 from core.render.docx_renderer import render_docx
 from core.render.models import RenderOutput
@@ -38,6 +43,7 @@ def run_task(
 
     skill_result = skill.build_fields(task_spec)
     template_observed = observe_document(template_document)
+    dominant_template_indent = dominant_first_line_indent_twips(template_document)
     output = render_docx(
         document=template_document,
         skill_result=skill_result,
@@ -53,12 +59,22 @@ def run_task(
             issues=[],
         )
         effective_policy_overrides: dict[str, object] = {}
+        diagnostics = None
     else:
         effective_policy, effective_policy_overrides = _build_effective_policy_for_validation(
-            policy, template_observed, format_baseline
+            policy,
+            template_observed,
+            dominant_template_indent,
+            format_baseline,
         )
         fix_document(output.document, policy, touched_runs)
         output.format_report = validate_document(output.document, effective_policy, touched_runs)
+        diagnostics = build_format_diagnostics(
+            template_doc=template_document,
+            rendered_doc=output.document,
+            policy=effective_policy,
+            format_report=output.format_report,
+        )
 
     rendered_observed = observe_document(output.document)
     output.format_report.summary = FormatSummary(
@@ -68,6 +84,7 @@ def run_task(
         mode=format_mode,
         baseline=format_baseline,
         effective_policy_overrides=effective_policy_overrides,
+        diagnostics=diagnostics,
         skipped=(format_mode == "off"),
     )
 
@@ -84,6 +101,7 @@ def run_task(
 def _build_effective_policy_for_validation(
     policy: FormatPolicy,
     template_observed,
+    dominant_template_indent: int | None,
     format_baseline: FormatBaseline,
 ) -> tuple[FormatPolicy, dict[str, object]]:
     if format_baseline == "policy":
@@ -97,31 +115,13 @@ def _build_effective_policy_for_validation(
             overrides["forbid_tables"] = False
         effective_policy.forbid_tables = False
 
-    dominant_indent = _pick_dominant_indent(template_observed.first_line_indent_twips_hist)
-    if dominant_indent is None:
+    if dominant_template_indent is None:
         if effective_policy.first_line_indent_twips is not None:
             overrides["first_line_indent_twips"] = None
         effective_policy.first_line_indent_twips = None
     else:
-        if effective_policy.first_line_indent_twips != dominant_indent:
-            overrides["first_line_indent_twips"] = dominant_indent
-        effective_policy.first_line_indent_twips = dominant_indent
+        if effective_policy.first_line_indent_twips != dominant_template_indent:
+            overrides["first_line_indent_twips"] = dominant_template_indent
+        effective_policy.first_line_indent_twips = dominant_template_indent
 
     return effective_policy, overrides
-
-
-def _pick_dominant_indent(indent_hist: dict[str, int]) -> int | None:
-    numeric_entries: list[tuple[int, int]] = []
-    for key, count in indent_hist.items():
-        if key == "none":
-            continue
-        try:
-            numeric_entries.append((int(key), count))
-        except ValueError:
-            continue
-
-    if not numeric_entries:
-        return None
-
-    numeric_entries.sort(key=lambda item: (-item[1], item[0]))
-    return numeric_entries[0][0]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import cast
 
 from docx.document import Document as DocxDocument
@@ -43,6 +44,31 @@ def observe_document(document: DocxDocument) -> FormatObserved:
     )
 
 
+def dominant_first_line_indent_twips(document: DocxDocument) -> int | None:
+    """Pick dominant first-line indent with body-first fallback.
+
+    Strategy:
+    - Prefer body paragraphs (`document.paragraphs`).
+    - Ignore "none" and tiny values (< 200 twips).
+    - If body has no usable indent values, fall back to table paragraphs.
+    """
+
+    body_hist = _collect_indent_hist(document.paragraphs)
+    dominant = pick_dominant_indent_from_hist(body_hist)
+    if dominant is not None:
+        return dominant
+
+    table_paragraphs = (
+        paragraph
+        for table in document.tables
+        for row in table.rows
+        for cell in row.cells
+        for paragraph in cell.paragraphs
+    )
+    table_hist = _collect_indent_hist(table_paragraphs)
+    return pick_dominant_indent_from_hist(table_hist)
+
+
 def diff_observed(template: FormatObserved, rendered: FormatObserved) -> FormatObservedDiff:
     """Compute rendered-template delta from observed snapshots."""
 
@@ -58,6 +84,31 @@ def diff_observed(template: FormatObserved, rendered: FormatObserved) -> FormatO
         has_numpr_changed=template.has_numpr != rendered.has_numpr,
         first_line_indent_twips_hist_delta=indent_delta,
     )
+
+
+def pick_dominant_indent_from_hist(indent_hist: dict[str, int], min_twips: int = 200) -> int | None:
+    """Pick dominant indent value from a histogram.
+
+    Keys must be twips as strings; "none" and values below min_twips are ignored.
+    """
+
+    numeric_entries: list[tuple[int, int]] = []
+    for key, count in indent_hist.items():
+        if key == "none":
+            continue
+        try:
+            twips = int(key)
+        except ValueError:
+            continue
+        if twips < min_twips:
+            continue
+        numeric_entries.append((twips, count))
+
+    if not numeric_entries:
+        return None
+
+    numeric_entries.sort(key=lambda item: (-item[1], item[0]))
+    return numeric_entries[0][0]
 
 
 def _indent_to_key(indent) -> str:
@@ -77,3 +128,11 @@ def _indent_to_key(indent) -> str:
 
 def _inc(hist: dict[str, int], key: str) -> None:
     hist[key] = hist.get(key, 0) + 1
+
+
+def _collect_indent_hist(paragraphs: Iterable) -> dict[str, int]:
+    hist: dict[str, int] = {}
+    for paragraph in paragraphs:
+        key = _indent_to_key(paragraph.paragraph_format.first_line_indent)
+        _inc(hist, key)
+    return hist
