@@ -78,6 +78,8 @@ class FormatSummary(BaseModel):
     baseline: Literal["template", "policy"]
     effective_policy_overrides: dict[str, Any] = Field(default_factory=dict)
     diagnostics: dict[str, Any] | None = None
+    fix_applied: bool = False
+    fix_changes: list[dict[str, Any]] = Field(default_factory=list)
     skipped: bool
 
 

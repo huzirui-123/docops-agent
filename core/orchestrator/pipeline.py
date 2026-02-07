@@ -7,13 +7,13 @@ from typing import Literal
 from docx.document import Document as DocxDocument
 
 from core.format.diagnostics import build_format_diagnostics
-from core.format.fixer import fix_document
 from core.format.models import FormatPolicy, FormatReport, FormatSummary
 from core.format.observed import (
     diff_observed,
     dominant_first_line_indent_twips,
     observe_document,
 )
+from core.format.safe_fixer import safe_fix_document
 from core.format.validator import validate_document
 from core.render.docx_renderer import render_docx
 from core.render.models import RenderOutput
@@ -23,6 +23,7 @@ from core.utils.errors import MissingRequiredFieldsError
 
 FormatMode = Literal["report", "strict", "off"]
 FormatBaseline = Literal["template", "policy"]
+FormatFixMode = Literal["none", "safe"]
 
 
 def run_task(
@@ -33,6 +34,7 @@ def run_task(
     unsupported_mode: Literal["error", "warn"] = "error",
     format_mode: FormatMode = "strict",
     format_baseline: FormatBaseline = "template",
+    format_fix_mode: FormatFixMode = "safe",
 ) -> RenderOutput:
     """Execute skill -> render -> fix -> validate pipeline."""
 
@@ -40,6 +42,8 @@ def run_task(
         raise ValueError(f"Unsupported format mode: {format_mode}")
     if format_baseline not in {"template", "policy"}:
         raise ValueError(f"Unsupported format baseline: {format_baseline}")
+    if format_fix_mode not in {"none", "safe"}:
+        raise ValueError(f"Unsupported format fix mode: {format_fix_mode}")
 
     skill_result = skill.build_fields(task_spec)
     template_observed = observe_document(template_document)
@@ -60,6 +64,7 @@ def run_task(
         )
         effective_policy_overrides: dict[str, object] = {}
         diagnostics = None
+        fix_changes: list[dict[str, object]] = []
     else:
         effective_policy, effective_policy_overrides = _build_effective_policy_for_validation(
             policy,
@@ -67,7 +72,10 @@ def run_task(
             dominant_template_indent,
             format_baseline,
         )
-        fix_document(output.document, policy, touched_runs)
+        if format_fix_mode == "safe":
+            fix_changes = safe_fix_document(output.document, effective_policy, touched_runs)
+        else:
+            fix_changes = []
         output.format_report = validate_document(output.document, effective_policy, touched_runs)
         diagnostics = build_format_diagnostics(
             template_doc=template_document,
@@ -85,6 +93,8 @@ def run_task(
         baseline=format_baseline,
         effective_policy_overrides=effective_policy_overrides,
         diagnostics=diagnostics,
+        fix_applied=bool(fix_changes),
+        fix_changes=fix_changes,
         skipped=(format_mode == "off"),
     )
 

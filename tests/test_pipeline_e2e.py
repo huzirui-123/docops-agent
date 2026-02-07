@@ -6,6 +6,7 @@ from core.format.models import FormatPolicy
 from core.orchestrator.pipeline import run_task
 from core.skills.base import Skill
 from core.skills.models import SkillResult, TaskSpec
+from core.utils.docx_xml import set_run_fonts_and_size
 from core.utils.errors import MissingRequiredFieldsError
 
 
@@ -90,7 +91,13 @@ def test_pipeline_missing_required_uses_template_fields_boundary() -> None:
 
 def test_pipeline_success_path_passes_formatter() -> None:
     document = Document()
-    document.add_paragraph("【A】")
+    paragraph = document.add_paragraph("【A】")
+    set_run_fonts_and_size(
+        paragraph.runs[0],
+        latin_font="Calibri",
+        east_asia_font="宋体",
+        size_pt=12,
+    )
 
     skill = StaticSkill(
         SkillResult(field_values={"A": "ok"}, required_fields={"A"}, optional_fields=set())

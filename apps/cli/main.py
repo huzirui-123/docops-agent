@@ -35,6 +35,7 @@ app = typer.Typer(help="Document Ops Agent CLI", rich_markup_mode=None)
 UnsupportedMode = Literal["error", "warn"]
 FormatMode = Literal["report", "strict", "off"]
 FormatBaseline = Literal["template", "policy"]
+FormatFixMode = Literal["none", "safe"]
 
 
 @app.callback()
@@ -52,6 +53,7 @@ def run_command(
     unsupported_mode: Annotated[str, typer.Option()] = "error",
     format_mode: Annotated[str, typer.Option()] = "report",
     format_baseline: Annotated[str, typer.Option()] = "template",
+    format_fix_mode: Annotated[str, typer.Option()] = "safe",
     export_suggested_policy: Annotated[
         Path | None,
         typer.Option(
@@ -117,6 +119,18 @@ def run_command(
         raise typer.Exit(code=1)
     format_baseline_typed = cast(FormatBaseline, normalized_format_baseline)
 
+    normalized_format_fix_mode = format_fix_mode.lower().strip()
+    if normalized_format_fix_mode not in {"none", "safe"}:
+        typer.echo("ERROR: --format-fix-mode must be one of: none, safe.")
+        _safe_write_exit1_fallback(
+            paths,
+            "ArgumentValidationError",
+            "invalid format_fix_mode",
+            "args",
+        )
+        raise typer.Exit(code=1)
+    format_fix_mode_typed = cast(FormatFixMode, normalized_format_fix_mode)
+
     if force and no_overwrite:
         typer.echo("ERROR: --force and --no-overwrite cannot be used together.")
         _safe_write_exit1_fallback(paths, "ArgumentConflict", "conflicting overwrite flags", "args")
@@ -180,6 +194,7 @@ def run_command(
             unsupported_mode=unsupported_mode_typed,
             format_mode=format_mode_typed,
             format_baseline=format_baseline_typed,
+            format_fix_mode=format_fix_mode_typed,
         )
 
         if output.replace_report.summary.had_unsupported and unsupported_mode_typed == "warn":
@@ -189,6 +204,7 @@ def run_command(
             )
 
         if format_mode_typed == "off":
+            typer.echo("INFO(format): fix skipped (off mode)")
             typer.echo("INFO: format validation skipped")
             exit_code = 0
             reason = "success"
