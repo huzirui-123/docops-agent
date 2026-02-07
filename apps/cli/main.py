@@ -10,6 +10,7 @@ from typing import Annotated, Any, Literal, cast
 import typer
 from docx import Document
 
+from apps.cli.format_human import render_format_summary
 from apps.cli.io import (
     OutputPaths,
     build_debug_output_path,
@@ -36,6 +37,7 @@ UnsupportedMode = Literal["error", "warn"]
 FormatMode = Literal["report", "strict", "off"]
 FormatBaseline = Literal["template", "policy"]
 FormatFixMode = Literal["none", "safe"]
+FormatReportMode = Literal["human", "json", "both"]
 
 
 @app.callback()
@@ -54,6 +56,7 @@ def run_command(
     format_mode: Annotated[str, typer.Option()] = "report",
     format_baseline: Annotated[str, typer.Option()] = "template",
     format_fix_mode: Annotated[str, typer.Option()] = "safe",
+    format_report: Annotated[str, typer.Option()] = "human",
     export_suggested_policy: Annotated[
         Path | None,
         typer.Option(
@@ -130,6 +133,18 @@ def run_command(
         )
         raise typer.Exit(code=1)
     format_fix_mode_typed = cast(FormatFixMode, normalized_format_fix_mode)
+
+    normalized_format_report = format_report.lower().strip()
+    if normalized_format_report not in {"human", "json", "both"}:
+        typer.echo("ERROR: --format-report must be one of: human, json, both.")
+        _safe_write_exit1_fallback(
+            paths,
+            "ArgumentValidationError",
+            "invalid format_report",
+            "args",
+        )
+        raise typer.Exit(code=1)
+    format_report_typed = cast(FormatReportMode, normalized_format_report)
 
     if force and no_overwrite:
         typer.echo("ERROR: --force and --no-overwrite cannot be used together.")
@@ -246,6 +261,13 @@ def run_command(
         typer.echo(f"ERROR: {type(exc).__name__}: {exc}")
 
     docx_write_error: str | None = None
+
+    if (
+        output is not None
+        and output.format_report.summary is not None
+        and format_report_typed in {"human", "both"}
+    ):
+        typer.echo(render_format_summary(output, format_fix_mode_typed))
 
     if output is not None:
         try:

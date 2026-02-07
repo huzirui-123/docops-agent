@@ -20,6 +20,7 @@ Document Ops Agent MVP（无 LLM）。
 `--format-mode` 控制格式验收语义（`report|strict|off`，默认 `report`）。
 `--format-baseline` 控制验收基线（`template|policy`，默认 `template`）。
 `--format-fix-mode` 控制格式修复策略（`none|safe`，默认 `safe`；仅在非 off 模式生效）。
+`--format-report` 控制终端格式摘要输出（`human|json|both`，默认 `human`）。
 `--export-suggested-policy PATH` 导出建议策略 YAML（可用于后续 policy 调优）。
 
 `report`：产出文档与报告，格式问题只告警不拦截。  
@@ -31,6 +32,9 @@ Document Ops Agent MVP（无 LLM）。
 `none`：只报告不修复，尽量保留模板格式。  
 `safe`：仅做段落级轻修复（首行缩进/行距），不改文本/字体/表格结构。  
 `off` 模式下总是跳过 fix 与 validate。
+`human`：终端打印可读格式摘要。  
+`json`：终端不打印格式摘要（仍写四件套 JSON）。  
+`both`：打印可读摘要并保留现有 WARNING 行。
 
 `out.format_report.json` 的 `summary` 包含：
 `template_observed` / `rendered_observed` / `diff` / `baseline` / `effective_policy_overrides` / `diagnostics`。
@@ -49,6 +53,7 @@ Document Ops Agent MVP（无 LLM）。
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out`
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --format-mode strict --format-baseline policy`
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --format-mode strict --format-baseline policy --format-fix-mode none`
+`poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --format-report json`
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --format-mode off`
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --export-suggested-policy ./suggested_policy.yaml`
 
