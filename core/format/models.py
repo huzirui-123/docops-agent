@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -36,6 +38,40 @@ class FormatIssue(BaseModel):
     fixed: bool = False
 
 
+class FormatObserved(BaseModel):
+    """Observed formatting characteristics of one document snapshot."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    has_tables: bool
+    has_numpr: bool
+    first_line_indent_twips_hist: dict[str, int] = Field(default_factory=dict)
+    run_font_latin_hist: dict[str, int] = Field(default_factory=dict)
+    run_font_east_asia_hist: dict[str, int] = Field(default_factory=dict)
+
+
+class FormatObservedDiff(BaseModel):
+    """Difference between rendered and template observed formatting."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    has_tables_changed: bool
+    has_numpr_changed: bool
+    first_line_indent_twips_hist_delta: dict[str, int] = Field(default_factory=dict)
+
+
+class FormatSummary(BaseModel):
+    """Observed summary attached to format reports."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    template_observed: FormatObserved
+    rendered_observed: FormatObserved
+    diff: FormatObservedDiff
+    mode: Literal["report", "strict", "off"]
+    skipped: bool
+
+
 class FormatReport(BaseModel):
     """Validation/fix report.
 
@@ -51,6 +87,7 @@ class FormatReport(BaseModel):
     error_count: int
     fixed_count: int
     issues: list[FormatIssue] = Field(default_factory=list)
+    summary: FormatSummary | None = None
 
     @classmethod
     def from_issues(cls, issues: list[FormatIssue]) -> FormatReport:

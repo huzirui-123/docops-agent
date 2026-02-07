@@ -17,6 +17,11 @@ Document Ops Agent MVP（无 LLM）。
 `--force` 覆盖已有输出（默认行为，若覆盖会打印 INFO）。
 `--no-overwrite` 禁止覆盖，若输出已存在则返回退出码 `1`。
 `--debug-dump` 输出 `out.debug.json`，用于定位可疑符号/字体来源。
+`--format-mode` 控制格式验收语义（`report|strict|off`，默认 `report`）。
+
+`report`：产出文档与报告，格式问题只告警不拦截。  
+`strict`：格式不通过则返回退出码 `4`。  
+`off`：跳过格式修复与验收，保留模板风格。
 
 固定输出四件套（`--out-dir` 下）：
 `out.docx`
@@ -26,6 +31,11 @@ Document Ops Agent MVP（无 LLM）。
 
 可选调试输出：
 `out.debug.json`
+
+示例：
+`poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out`
+`poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --format-mode strict`
+`poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --format-mode off`
 
 退出码：
 `0` 成功

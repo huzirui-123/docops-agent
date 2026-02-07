@@ -147,6 +147,8 @@ def test_cli_format_failed_returns_4() -> None:
                 "meeting_notice",
                 "--out-dir",
                 str(out_dir),
+                "--format-mode",
+                "strict",
             ],
         )
 
@@ -282,7 +284,7 @@ def test_cli_warn_mode_prints_warning() -> None:
         )
 
         assert result.exit_code == 0
-        assert "WARNING: unsupported placeholders detected" in result.stdout
+        assert "WARNING(unsupported): unsupported placeholders detected" in result.stdout
 
 
 def test_cli_debug_dump_writes_debug_json() -> None:

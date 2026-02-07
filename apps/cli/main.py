@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
@@ -18,6 +19,7 @@ from apps.cli.io import (
     write_fallback_json_atomic,
     write_render_output_atomic,
 )
+from core.format.models import FormatIssue
 from core.format.policy_loader import load_policy
 from core.orchestrator.pipeline import run_task
 from core.render.debug_dump import DebugReport, collect_suspicious_runs
@@ -29,6 +31,7 @@ from core.utils.errors import MissingRequiredFieldsError, TemplateError
 
 app = typer.Typer(help="Document Ops Agent CLI", rich_markup_mode=None)
 UnsupportedMode = Literal["error", "warn"]
+FormatMode = Literal["report", "strict", "off"]
 
 
 @app.callback()
@@ -44,6 +47,7 @@ def run_command(
     out_dir: Annotated[Path, typer.Option()] = Path("."),
     policy: Annotated[Path | None, typer.Option()] = None,
     unsupported_mode: Annotated[str, typer.Option()] = "error",
+    format_mode: Annotated[str, typer.Option()] = "report",
     force: Annotated[
         bool, typer.Option("--force", help="Overwrite outputs when they already exist.")
     ] = False,
@@ -77,6 +81,18 @@ def run_command(
         )
         raise typer.Exit(code=1)
     unsupported_mode_typed = cast(UnsupportedMode, normalized_mode)
+
+    normalized_format_mode = format_mode.lower().strip()
+    if normalized_format_mode not in {"report", "strict", "off"}:
+        typer.echo("ERROR: --format-mode must be one of: report, strict, off.")
+        _safe_write_exit1_fallback(
+            paths,
+            "ArgumentValidationError",
+            "invalid format_mode",
+            "args",
+        )
+        raise typer.Exit(code=1)
+    format_mode_typed = cast(FormatMode, normalized_format_mode)
 
     if force and no_overwrite:
         typer.echo("ERROR: --force and --no-overwrite cannot be used together.")
@@ -129,18 +145,28 @@ def run_command(
             skill=selected_skill,
             policy=policy_model,
             unsupported_mode=unsupported_mode_typed,
+            format_mode=format_mode_typed,
         )
 
         if output.replace_report.summary.had_unsupported and unsupported_mode_typed == "warn":
             typer.echo(
-                "WARNING: unsupported placeholders detected "
+                "WARNING(unsupported): unsupported placeholders detected "
                 f"(count={output.replace_report.summary.unsupported_count}, mode=warn)."
             )
 
-        if not output.format_report.passed:
+        if format_mode_typed == "off":
+            typer.echo("INFO: format validation skipped")
+            exit_code = 0
+            reason = "success"
+        elif format_mode_typed == "strict" and not output.format_report.passed:
             exit_code = 4
             reason = "format validation failed"
         else:
+            if output.format_report.issues:
+                typer.echo(
+                    "WARNING(format): format issues detected "
+                    f"({_format_issue_summary(output.format_report.issues)})."
+                )
             exit_code = 0
             reason = "success"
 
@@ -160,7 +186,7 @@ def run_command(
             and unsupported_mode_typed == "warn"
         ):
             typer.echo(
-                "WARNING: unsupported placeholders detected "
+                "WARNING(unsupported): unsupported placeholders detected "
                 f"(count={output.replace_report.summary.unsupported_count}, mode=warn)."
             )
     except Exception as exc:  # noqa: BLE001
@@ -282,6 +308,11 @@ def _build_debug_payload(
     if pre_report is not None:
         payload["pre_pipeline"] = pre_report.model_dump(mode="json")
     return payload
+
+
+def _format_issue_summary(issues: list[FormatIssue]) -> str:
+    counter: Counter[str] = Counter(issue.code for issue in issues)
+    return ", ".join(f"{code}={counter[code]}" for code in sorted(counter))
 
 
 def main() -> None:
