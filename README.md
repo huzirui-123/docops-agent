@@ -37,6 +37,7 @@ Document Ops Agent MVP（无 LLM）。
 `json`：终端不打印格式摘要，并抑制 WARNING（仍写四件套 JSON）。  
 `both`：打印可读摘要并保留现有 WARNING 行。
 human 摘要在 run 结束（四件套写盘后）统一打印一次。
+`WARNING(format)` 仅表示存在 `error` 级格式问题；`warn` 级问题只在 human 摘要与 JSON 报告中展示。
 
 `quick`：`report + template baseline + safe fix + human summary`。  
 `template`：`report + template baseline + no fix + human summary`。  

@@ -86,15 +86,16 @@ def render_format_summary(
     lines.append(
         "suggestion: "
         + _build_suggestion(
-            issue_counter=issue_counter,
+            error_counter=error_counter,
+            warning_counter=warning_counter,
             summary=summary,
-            template_indent=template_indent,
         )
     )
     lines.append(
         "next_cmd: "
         + _build_next_cmd(
-            issue_counter=issue_counter,
+            error_counter=error_counter,
+            warning_counter=warning_counter,
             summary=summary,
             command_base=command_base,
         )
@@ -110,54 +111,59 @@ def _dominant_indent(indent_hist: dict[str, int]) -> str:
 
 
 def _build_suggestion(
-    *, issue_counter: Counter[str], summary: FormatSummary, template_indent: str
+    *,
+    error_counter: Counter[str],
+    warning_counter: Counter[str],
+    summary: FormatSummary,
 ) -> str:
-    if not issue_counter:
+    has_errors = bool(error_counter)
+    has_warnings = bool(warning_counter)
+    if not has_errors and not has_warnings:
         return "none"
 
-    if "TABLE_FORBIDDEN" in issue_counter:
-        return "use --format-baseline template or --export-suggested-policy"
-
-    if "FIRST_LINE_INDENT_MISMATCH" in issue_counter:
-        if template_indent != "none":
+    if has_errors:
+        if summary.mode != "strict":
             return (
-                f"template dominant indent is {template_indent}; consider --format-baseline "
-                "template or adjust twips_tolerance"
+                "error-level issues detected; try --preset strict for gatekeeping. "
+                "Use --format-report json for quieter output."
             )
-        return "consider --format-baseline template or adjust first_line_indent_twips/tolerance"
+        return (
+            "strict mode failed on error-level issues; try --preset template "
+            "or adjust policy. Use --format-report json for quieter output."
+        )
 
-    diagnostics = summary.diagnostics
-    if isinstance(diagnostics, dict):
-        by_code = diagnostics.get("by_code")
-        if isinstance(by_code, dict):
-            for code in sorted(issue_counter.keys()):
-                bucket = by_code.get(code)
-                if isinstance(bucket, dict):
-                    suggestions = bucket.get("suggestions")
-                    if isinstance(suggestions, list) and suggestions:
-                        first = suggestions[0]
-                        if isinstance(first, str) and first.strip():
-                            return first.strip()
+    if summary.baseline != "template":
+        return (
+            "warn-only issues detected; output is usable. "
+            "Try --format-baseline template. Use --format-report json for quieter output."
+        )
 
-    return "review out.format_report.json diagnostics and adjust template/policy"
+    return (
+        "warn-only issues detected; output is usable. "
+        "Try --preset template. Use --format-report json for quieter output."
+    )
 
 
 def _build_next_cmd(
-    *, issue_counter: Counter[str], summary: FormatSummary, command_base: str
+    *,
+    error_counter: Counter[str],
+    warning_counter: Counter[str],
+    summary: FormatSummary,
+    command_base: str,
 ) -> str:
-    if not issue_counter:
+    has_errors = bool(error_counter)
+    has_warnings = bool(warning_counter)
+    if not has_errors and not has_warnings:
         return "none"
 
-    if summary.mode != "strict":
-        return f"{command_base} --preset strict"
-
-    if "TABLE_FORBIDDEN" in issue_counter or "FIRST_LINE_INDENT_MISMATCH" in issue_counter:
+    if has_errors:
+        if summary.mode != "strict":
+            return f"{command_base} --preset strict"
         return f"{command_base} --preset template"
 
     if summary.baseline != "template":
-        return f"{command_base} --preset template"
-
-    return f"{command_base} --export-suggested-policy ./suggested_policy.yaml"
+        return f"{command_base} --format-baseline template"
+    return f"{command_base} --preset template"
 
 
 def _to_string(value: object) -> str:

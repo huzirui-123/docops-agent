@@ -285,20 +285,31 @@ def run_command(
                 f"(count={output.replace_report.summary.unsupported_count}, mode=warn)."
             )
 
+        format_errors = [i for i in output.format_report.issues if i.severity == "error"]
+        format_warnings = [i for i in output.format_report.issues if i.severity == "warn"]
+
         if format_mode_typed == "off":
             typer.echo("INFO(format): fix skipped (off mode)")
             typer.echo("INFO: format validation skipped")
             exit_code = 0
             reason = "success"
         elif format_mode_typed == "strict" and not output.format_report.passed:
+            if show_warnings and format_errors:
+                typer.echo(
+                    "WARNING(format): format issues detected "
+                    f"({_format_issue_summary(format_errors)})."
+                )
             exit_code = 4
             reason = "format validation failed"
         else:
-            if show_warnings and output.format_report.issues:
+            if show_warnings and format_errors:
                 typer.echo(
                     "WARNING(format): format issues detected "
-                    f"({_format_issue_summary(output.format_report.issues)})."
+                    f"({_format_issue_summary(format_errors)})."
                 )
+            elif show_warnings and format_warnings:
+                # Warn-only issues are surfaced in summary/JSON, not WARNING(format).
+                pass
             exit_code = 0
             reason = "success"
 
