@@ -7,6 +7,7 @@ run_size_pt: 12
 line_spacing_twips: 360
 first_line_indent_twips: 420
 twips_tolerance: 20
+treat_inherited_as_error: false
 trim_leading_spaces: true
 trim_chars:
   - " "

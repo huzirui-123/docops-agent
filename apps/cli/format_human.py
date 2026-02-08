@@ -45,12 +45,32 @@ def render_format_summary(
     lines.append(f"dominant_indent: {template_indent}->{rendered_indent}")
 
     issue_counter: Counter[str] = Counter(issue.code for issue in report.issues)
+    error_counter: Counter[str] = Counter(
+        issue.code for issue in report.issues if issue.severity == "error"
+    )
+    warning_counter: Counter[str] = Counter(
+        issue.code for issue in report.issues if issue.severity == "warn"
+    )
     if issue_counter:
         top_items = sorted(issue_counter.items(), key=lambda item: (-item[1], item[0]))[:5]
         issues_text = ", ".join(f"{code}={count}" for code, count in top_items)
         lines.append(f"issues: {issues_text}")
     else:
         lines.append("issues: none")
+    if error_counter:
+        top_errors = sorted(error_counter.items(), key=lambda item: (-item[1], item[0]))[:5]
+        errors_text = ", ".join(f"{code}={count}" for code, count in top_errors)
+        lines.append(f"errors: {errors_text}")
+    else:
+        lines.append("errors: none")
+    if warning_counter:
+        top_warnings = sorted(
+            warning_counter.items(), key=lambda item: (-item[1], item[0])
+        )[:5]
+        warnings_text = ", ".join(f"{code}={count}" for code, count in top_warnings)
+        lines.append(f"warnings: {warnings_text}")
+    else:
+        lines.append("warnings: none")
 
     if summary.fix_applied and summary.fix_changes:
         lines.append(f"fix: applied {len(summary.fix_changes)} changes")

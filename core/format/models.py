@@ -21,6 +21,7 @@ class FormatPolicy(BaseModel):
     line_spacing_twips: int
     first_line_indent_twips: int | None
     twips_tolerance: int
+    treat_inherited_as_error: bool = False
     trim_leading_spaces: bool
     trim_chars: list[str]
 
@@ -42,6 +43,8 @@ class FormatIssue(BaseModel):
     template_value: Any | None = None
     rendered_value: Any | None = None
     context: dict[str, Any] = Field(default_factory=dict)
+    severity: Literal["error", "warn"] = "error"
+    observability: Literal["observed", "unknown"] = "observed"
 
 
 class FormatObserved(BaseModel):
@@ -88,7 +91,7 @@ class FormatReport(BaseModel):
 
     Rules:
     - passed == (error_count == 0)
-    - error_count counts unresolved issues (fixed == False), including non-fixable issues
+    - error_count counts unresolved severity=error issues
     - fixed_count counts issues fixed during fixer stage
     """
 
@@ -102,7 +105,9 @@ class FormatReport(BaseModel):
 
     @classmethod
     def from_issues(cls, issues: list[FormatIssue]) -> FormatReport:
-        unresolved = sum(1 for issue in issues if not issue.fixed)
+        unresolved = sum(
+            1 for issue in issues if not issue.fixed and issue.severity == "error"
+        )
         fixed_count = sum(1 for issue in issues if issue.fixed)
         return cls(
             passed=unresolved == 0,

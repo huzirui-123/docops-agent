@@ -76,7 +76,13 @@ def run_task(
             fix_changes = safe_fix_document(output.document, effective_policy, touched_runs)
         else:
             fix_changes = []
-        output.format_report = validate_document(output.document, effective_policy, touched_runs)
+        output.format_report = validate_document(
+            output.document,
+            effective_policy,
+            touched_runs,
+            baseline=format_baseline,
+            template_run_styles=output.replace_report.template_run_styles,
+        )
         diagnostics = build_format_diagnostics(
             template_doc=template_document,
             rendered_doc=output.document,

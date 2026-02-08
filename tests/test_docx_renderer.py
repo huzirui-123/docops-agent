@@ -59,6 +59,7 @@ def test_replacement_orders_same_run_occurrences_by_desc_start() -> None:
     )
 
     assert output.document.paragraphs[0].runs[0].text == "LONGAX"
+    assert output.replace_report.template_run_styles["p0:r0"].size_pt is None
 
 
 def test_warn_mode_summary_marks_unsupported_metadata() -> None:

@@ -40,6 +40,16 @@ class ReplaceSummary(BaseModel):
     unsupported_mode: Literal["error", "warn"]
 
 
+class RunStyleSnapshot(BaseModel):
+    """Captured template run style snapshot for touched runs."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    latin_font: str | None = None
+    east_asia_font: str | None = None
+    size_pt: int | None = None
+
+
 class ReplaceReport(BaseModel):
     """Full replacement report including touched runs."""
 
@@ -48,6 +58,7 @@ class ReplaceReport(BaseModel):
     entries: list[ReplaceLogEntry] = Field(default_factory=list)
     summary: ReplaceSummary
     touched_runs: list[str] = Field(default_factory=list)
+    template_run_styles: dict[str, RunStyleSnapshot] = Field(default_factory=dict)
 
 
 class MissingFieldsReport(BaseModel):

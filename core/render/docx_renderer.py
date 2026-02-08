@@ -16,11 +16,13 @@ from core.render.models import (
     ReplaceLogEntry,
     ReplaceReport,
     ReplaceSummary,
+    RunStyleSnapshot,
     empty_format_report,
 )
 from core.skills.models import SkillResult
 from core.templates.models import Occurrence, ParseResult
 from core.templates.placeholder_parser import parse_placeholders
+from core.utils.docx_xml import get_run_east_asia_font
 from core.utils.errors import TemplateError
 
 
@@ -39,6 +41,7 @@ def render_docx(
 
     entries: list[ReplaceLogEntry] = []
     touched_runs: set[str] = set()
+    template_run_styles: dict[str, RunStyleSnapshot] = {}
 
     for item in parse_result.unsupported:
         entries.append(
@@ -61,6 +64,7 @@ def render_docx(
             parse_result=parse_result,
             entries=entries,
             touched_runs=touched_runs,
+            template_run_styles=template_run_styles,
             unsupported_mode=unsupported_mode,
         )
         partial_output = RenderOutput(
@@ -79,7 +83,7 @@ def render_docx(
         )
 
     run_lookup = _build_run_lookup(document)
-    replaced_entries, touched_runs = _replace_supported_occurrences(
+    replaced_entries, touched_runs, template_run_styles = _replace_supported_occurrences(
         occurrences=parse_result.occurrences,
         run_lookup=run_lookup,
         field_values=skill_result.field_values,
@@ -91,6 +95,7 @@ def render_docx(
         parse_result=parse_result,
         entries=entries,
         touched_runs=touched_runs,
+        template_run_styles=template_run_styles,
         unsupported_mode=unsupported_mode,
     )
 
@@ -109,13 +114,14 @@ def _replace_supported_occurrences(
     run_lookup: Mapping[str, Run],
     field_values: dict[str, str],
     initial_touched: set[str],
-) -> tuple[list[ReplaceLogEntry], set[str]]:
+) -> tuple[list[ReplaceLogEntry], set[str], dict[str, RunStyleSnapshot]]:
     grouped: dict[str, list[Occurrence]] = defaultdict(list)
     for occurrence in occurrences:
         grouped[occurrence.run_id].append(occurrence)
 
     entries: list[ReplaceLogEntry] = []
     touched_runs = set(initial_touched)
+    template_run_styles: dict[str, RunStyleSnapshot] = {}
 
     for run_id in sorted(grouped.keys()):
         run = run_lookup.get(run_id)
@@ -141,6 +147,9 @@ def _replace_supported_occurrences(
                 )
                 continue
 
+            if run_id not in template_run_styles:
+                template_run_styles[run_id] = _snapshot_run_style(run)
+
             run_text = (
                 run_text[: occurrence.start] + replacement + run_text[occurrence.end :]
             )
@@ -160,7 +169,7 @@ def _replace_supported_occurrences(
 
         run.text = run_text
 
-    return entries, touched_runs
+    return entries, touched_runs, template_run_styles
 
 
 def _build_run_lookup(document: DocxDocument) -> dict[str, Run]:
@@ -196,6 +205,7 @@ def _build_replace_report(
     parse_result: ParseResult,
     entries: list[ReplaceLogEntry],
     touched_runs: set[str],
+    template_run_styles: dict[str, RunStyleSnapshot],
     unsupported_mode: Literal["error", "warn"],
 ) -> ReplaceReport:
     replaced_count = sum(1 for item in entries if item.status == "replaced")
@@ -210,10 +220,25 @@ def _build_replace_report(
         unsupported_count=unsupported_count,
         unsupported_mode=unsupported_mode,
     )
-    return ReplaceReport(entries=entries, summary=summary, touched_runs=sorted(touched_runs))
+    return ReplaceReport(
+        entries=entries,
+        summary=summary,
+        touched_runs=sorted(touched_runs),
+        template_run_styles=template_run_styles,
+    )
 
 
 def _paragraph_path_from_run_id(run_id: str | None) -> str | None:
     if run_id is None:
         return None
     return run_id.split(":r", maxsplit=1)[0]
+
+
+def _snapshot_run_style(run: Run) -> RunStyleSnapshot:
+    size = run.font.size.pt if run.font.size is not None else None
+    rounded_size = None if size is None else int(round(size))
+    return RunStyleSnapshot(
+        latin_font=run.font.name,
+        east_asia_font=get_run_east_asia_font(run),
+        size_pt=rounded_size,
+    )
