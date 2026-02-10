@@ -27,7 +27,7 @@ def _task_bytes() -> bytes:
 
 
 @pytest.mark.anyio
-async def test_run_upload_too_large_returns_413(monkeypatch) -> None:
+async def test_run_upload_too_large_returns_413(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DOCOPS_MAX_UPLOAD_BYTES", "32")
     transport = httpx.ASGITransport(app=app)
 
@@ -48,10 +48,11 @@ async def test_run_upload_too_large_returns_413(monkeypatch) -> None:
     assert response.status_code == 413
     payload = response.json()
     assert payload["error_code"] == "UPLOAD_TOO_LARGE"
+    assert payload["detail"]["request_id"] == response.headers["X-Docops-Request-Id"]
 
 
 @pytest.mark.anyio
-async def test_run_timeout_returns_408(monkeypatch) -> None:
+async def test_run_timeout_returns_408(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DOCOPS_REQUEST_TIMEOUT_SECONDS", "0.1")
     monkeypatch.setenv("DOCOPS_TEST_MODE", "1")
     monkeypatch.setenv("DOCOPS_TEST_SLEEP_SECONDS", "10")
@@ -75,6 +76,7 @@ async def test_run_timeout_returns_408(monkeypatch) -> None:
     assert response.status_code == 408
     payload = response.json()
     assert payload["error_code"] == "REQUEST_TIMEOUT"
+    assert payload["detail"]["request_id"] == response.headers["X-Docops-Request-Id"]
     detail = payload["detail"]
     assert detail["terminated"] is True
     pid = detail.get("timed_out_pid")

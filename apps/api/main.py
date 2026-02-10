@@ -1,4 +1,4 @@
-"""FastAPI wrapper for docops generation pipeline (M7-1)."""
+"""FastAPI wrapper for docops generation pipeline."""
 
 from __future__ import annotations
 
@@ -9,15 +9,19 @@ import multiprocessing as mp
 import os
 import shutil
 import tempfile
+import threading
 import time
+import uuid
 import zipfile
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi import FastAPI, File, Form, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
+from starlette.background import BackgroundTask
 
 from apps.api.runner_process import RunnerRequest, RunnerResponse, run_pipeline_worker
 from apps.cli.io import build_output_paths
@@ -34,6 +38,8 @@ PresetMode = Literal["quick", "template", "strict"]
 
 _DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 _DEFAULT_TIMEOUT_SECONDS = 60.0
+_DEFAULT_MAX_CONCURRENCY = 2
+_DEFAULT_QUEUE_TIMEOUT_SECONDS = 0.0
 
 _PRESET_TO_FORMAT: dict[PresetMode, tuple[FormatMode, FormatBaseline, FormatFixMode]] = {
     "quick": ("report", "template", "safe"),
@@ -51,6 +57,20 @@ class EffectiveConfig:
     format_report: FormatReportMode
 
 
+@dataclass
+class _PipelineResult:
+    exit_code: int
+    message: str
+    subprocess_pid: int | None
+
+
+@dataclass
+class _ConcurrencyLimiter:
+    max_concurrency: int
+    queue_timeout_seconds: float
+    semaphore: threading.BoundedSemaphore
+
+
 class ApiRequestError(Exception):
     def __init__(
         self,
@@ -65,6 +85,32 @@ class ApiRequestError(Exception):
         self.error_code = error_code
         self.message = message
         self.detail = detail or {}
+
+
+class PipelineTimeoutError(TimeoutError):
+    """Raised when subprocess execution exceeds timeout."""
+
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float,
+        pid: int | None,
+        terminated: bool,
+        include_pid: bool,
+    ) -> None:
+        detail: dict[str, Any] = {
+            "timeout_seconds": timeout_seconds,
+            "terminated": terminated,
+        }
+        if include_pid and pid is not None:
+            detail["timed_out_pid"] = pid
+
+        super().__init__("request timed out")
+        self.detail = detail
+
+
+_limiter_lock = threading.Lock()
+_limiter_cache: _ConcurrencyLimiter | None = None
 
 
 @app.get("/healthz")
@@ -86,13 +132,35 @@ async def run_v1(
     format_report: Annotated[str | None, Form()] = None,
     policy_yaml: Annotated[str | None, Form()] = None,
     export_suggested_policy: Annotated[bool, Form()] = False,
-) -> Response:
+) -> StreamingResponse | JSONResponse:
     """Run one generation job and return a zip with output artifacts."""
+
+    request_started = time.perf_counter()
+    request_id = uuid.uuid4().hex
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="docops-api-run-"))
     zip_path: Path | None = None
+    slot_acquired = False
+    limiter: _ConcurrencyLimiter | None = None
+
+    queue_wait_ms = 0
+    subprocess_ms = 0
 
     try:
+        limiter = _get_concurrency_limiter()
+        slot_acquired, queue_wait_ms = await _try_acquire_concurrency_slot(limiter)
+        if not slot_acquired:
+            return _error_response(
+                status_code=429,
+                error_code="TOO_MANY_REQUESTS",
+                message="server busy",
+                request_id=request_id,
+                detail={
+                    "max_concurrency": limiter.max_concurrency,
+                    "queue_timeout_seconds": limiter.queue_timeout_seconds,
+                },
+            )
+
         max_upload_bytes = _max_upload_bytes()
         timeout_seconds = _timeout_seconds()
 
@@ -142,6 +210,7 @@ async def run_v1(
 
         _load_policy_with_api_error(policy_path)
 
+        subprocess_started = time.perf_counter()
         run_result = await _run_pipeline_with_timeout(
             timeout_seconds=timeout_seconds,
             tmp_dir=tmp_dir,
@@ -152,17 +221,42 @@ async def run_v1(
             effective=effective,
             export_suggested_policy=export_suggested_policy,
         )
+        subprocess_ms = _elapsed_ms(subprocess_started)
+
         paths = build_output_paths(tmp_dir)
+        api_result_path = tmp_dir / "api_result.json"
         suggested_policy_path = (
             tmp_dir / "out.suggested_policy.yaml" if export_suggested_policy else None
         )
 
-        api_result_path = tmp_dir / "api_result.json"
+        required_paths = [
+            paths.docx,
+            paths.replace_log,
+            paths.missing_fields,
+            paths.format_report,
+        ]
+        for required in required_paths:
+            if not required.exists():
+                raise RuntimeError(f"Missing output artifact: {required.name}")
+
+        if suggested_policy_path is not None and not suggested_policy_path.exists():
+            raise RuntimeError("Missing output artifact: out.suggested_policy.yaml")
+
+        # First pass measures zip packaging time, second pass ships final artifacts with timing.
+        trace_path = tmp_dir / "trace.json" if _debug_artifacts_enabled() else None
+
+        timing_measure = {
+            "queue_wait_ms": queue_wait_ms,
+            "subprocess_ms": subprocess_ms,
+            "zip_ms": 0,
+            "total_ms": _elapsed_ms(request_started),
+        }
         _write_json_atomic(
             api_result_path,
             _build_api_result(
                 exit_code=run_result.exit_code,
                 message=run_result.message,
+                request_id=request_id,
                 input_payload={
                     "skill": skill,
                     "preset": preset,
@@ -174,39 +268,82 @@ async def run_v1(
                     "export_suggested_policy": export_suggested_policy,
                 },
                 effective=effective,
+                timing=timing_measure,
             ),
         )
-
-        required_paths = [
-            paths.docx,
-            paths.replace_log,
-            paths.missing_fields,
-            paths.format_report,
-            api_result_path,
-        ]
-        if suggested_policy_path is not None and not suggested_policy_path.exists():
-            raise RuntimeError("Missing output artifact: out.suggested_policy.yaml")
-        for required in required_paths:
-            if not required.exists():
-                raise RuntimeError(f"Missing output artifact: {required.name}")
+        if trace_path is not None:
+            _write_json_atomic(
+                trace_path,
+                _build_trace_payload(
+                    request_id=request_id,
+                    exit_code=run_result.exit_code,
+                    timing=timing_measure,
+                    subprocess_pid=run_result.subprocess_pid,
+                    effective=effective,
+                ),
+            )
 
         optional_paths: list[Path] = []
         if suggested_policy_path is not None:
             optional_paths.append(suggested_policy_path)
 
-        zip_path = _create_zip(required_paths, optional_paths)
+        zip_started = time.perf_counter()
+        measured_zip = _create_zip(required_paths + [api_result_path], optional_paths)
+        measured_zip_ms = _elapsed_ms(zip_started)
+        _safe_remove_file(measured_zip)
 
-        headers = {"X-Docops-Exit-Code": str(run_result.exit_code)}
-        cleanup_tasks = BackgroundTasks()
-        cleanup_tasks.add_task(_cleanup_after_response, zip_path, tmp_dir)
+        timing_final = {
+            "queue_wait_ms": queue_wait_ms,
+            "subprocess_ms": subprocess_ms,
+            "zip_ms": measured_zip_ms,
+            "total_ms": _elapsed_ms(request_started),
+        }
+        _write_json_atomic(
+            api_result_path,
+            _build_api_result(
+                exit_code=run_result.exit_code,
+                message=run_result.message,
+                request_id=request_id,
+                input_payload={
+                    "skill": skill,
+                    "preset": preset,
+                    "format_mode": format_mode,
+                    "format_baseline": format_baseline,
+                    "format_fix_mode": format_fix_mode,
+                    "format_report": format_report,
+                    "policy_yaml_provided": policy_yaml is not None,
+                    "export_suggested_policy": export_suggested_policy,
+                },
+                effective=effective,
+                timing=timing_final,
+            ),
+        )
+        if trace_path is not None:
+            _write_json_atomic(
+                trace_path,
+                _build_trace_payload(
+                    request_id=request_id,
+                    exit_code=run_result.exit_code,
+                    timing=timing_final,
+                    subprocess_pid=run_result.subprocess_pid,
+                    effective=effective,
+                ),
+            )
+            optional_paths.append(trace_path)
 
-        zip_bytes = zip_path.read_bytes()
-        headers["Content-Disposition"] = 'attachment; filename=\"docops_outputs.zip\"'
-        return Response(
-            content=zip_bytes,
+        zip_path = _create_zip(required_paths + [api_result_path], optional_paths)
+
+        headers = {
+            "X-Docops-Exit-Code": str(run_result.exit_code),
+            "X-Docops-Request-Id": request_id,
+            "Content-Disposition": 'attachment; filename="docops_outputs.zip"',
+        }
+        background = BackgroundTask(_cleanup_after_response, zip_path, tmp_dir)
+        return StreamingResponse(
+            _iter_file_chunks(zip_path),
             media_type="application/zip",
             headers=headers,
-            background=cleanup_tasks,
+            background=background,
         )
     except ApiRequestError as exc:
         _cleanup_now(zip_path, tmp_dir)
@@ -214,6 +351,7 @@ async def run_v1(
             status_code=exc.status_code,
             error_code=exc.error_code,
             message=exc.message,
+            request_id=request_id,
             detail=exc.detail,
         )
     except PipelineTimeoutError as exc:
@@ -222,6 +360,7 @@ async def run_v1(
             status_code=408,
             error_code="REQUEST_TIMEOUT",
             message="request timed out",
+            request_id=request_id,
             detail=exc.detail,
         )
     except Exception as exc:  # noqa: BLE001
@@ -230,36 +369,12 @@ async def run_v1(
             status_code=500,
             error_code="INTERNAL_ERROR",
             message="internal server error",
-            detail={"error": str(exc)},
+            request_id=request_id,
+            detail={"error": str(exc), "total_ms": _elapsed_ms(request_started)},
         )
-
-
-@dataclass
-class _PipelineResult:
-    exit_code: int
-    message: str
-
-
-class PipelineTimeoutError(TimeoutError):
-    """Raised when subprocess execution exceeds timeout."""
-
-    def __init__(
-        self,
-        *,
-        timeout_seconds: float,
-        pid: int | None,
-        terminated: bool,
-        include_pid: bool,
-    ) -> None:
-        detail: dict[str, Any] = {
-            "timeout_seconds": timeout_seconds,
-            "terminated": terminated,
-        }
-        if include_pid and pid is not None:
-            detail["timed_out_pid"] = pid
-
-        super().__init__("request timed out")
-        self.detail = detail
+    finally:
+        if slot_acquired and limiter is not None:
+            limiter.semaphore.release()
 
 
 async def _run_pipeline_with_timeout(
@@ -348,6 +463,7 @@ async def _run_pipeline_with_timeout(
         return _PipelineResult(
             exit_code=response_payload.exit_code,
             message=response_payload.message,
+            subprocess_pid=process.pid,
         )
     finally:
         try:
@@ -623,6 +739,77 @@ def _timeout_seconds() -> float:
     return parsed if parsed > 0 else _DEFAULT_TIMEOUT_SECONDS
 
 
+def _max_concurrency() -> int:
+    raw = os.getenv("DOCOPS_MAX_CONCURRENCY")
+    if raw is None:
+        return _DEFAULT_MAX_CONCURRENCY
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return _DEFAULT_MAX_CONCURRENCY
+    return parsed if parsed > 0 else _DEFAULT_MAX_CONCURRENCY
+
+
+def _queue_timeout_seconds() -> float:
+    raw = os.getenv("DOCOPS_QUEUE_TIMEOUT_SECONDS")
+    if raw is None:
+        return _DEFAULT_QUEUE_TIMEOUT_SECONDS
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return _DEFAULT_QUEUE_TIMEOUT_SECONDS
+    return parsed if parsed >= 0 else _DEFAULT_QUEUE_TIMEOUT_SECONDS
+
+
+def _get_concurrency_limiter() -> _ConcurrencyLimiter:
+    global _limiter_cache
+
+    max_concurrency = _max_concurrency()
+    queue_timeout = _queue_timeout_seconds()
+
+    with _limiter_lock:
+        if _limiter_cache is None:
+            _limiter_cache = _ConcurrencyLimiter(
+                max_concurrency=max_concurrency,
+                queue_timeout_seconds=queue_timeout,
+                semaphore=threading.BoundedSemaphore(value=max_concurrency),
+            )
+            return _limiter_cache
+
+        if (
+            _limiter_cache.max_concurrency != max_concurrency
+            or _limiter_cache.queue_timeout_seconds != queue_timeout
+        ):
+            _limiter_cache = _ConcurrencyLimiter(
+                max_concurrency=max_concurrency,
+                queue_timeout_seconds=queue_timeout,
+                semaphore=threading.BoundedSemaphore(value=max_concurrency),
+            )
+
+        return _limiter_cache
+
+
+async def _try_acquire_concurrency_slot(limiter: _ConcurrencyLimiter) -> tuple[bool, int]:
+    waited_started = time.perf_counter()
+    timeout_seconds = limiter.queue_timeout_seconds
+
+    if timeout_seconds == 0:
+        acquired_now = limiter.semaphore.acquire(blocking=False)
+        return acquired_now, _elapsed_ms(waited_started)
+
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if limiter.semaphore.acquire(blocking=False):
+            return True, _elapsed_ms(waited_started)
+        await asyncio.sleep(0.01)
+
+    return False, _elapsed_ms(waited_started)
+
+
+def _debug_artifacts_enabled() -> bool:
+    return os.getenv("DOCOPS_DEBUG_ARTIFACTS", "0") == "1"
+
+
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -657,12 +844,16 @@ def _build_api_result(
     *,
     exit_code: int,
     message: str,
+    request_id: str,
     input_payload: dict[str, Any],
     effective: EffectiveConfig,
+    timing: dict[str, int],
 ) -> dict[str, Any]:
     return {
         "exit_code": exit_code,
         "message": message,
+        "request_id": request_id,
+        "timing": timing,
         "input": input_payload,
         "effective": {
             "preset": effective.preset,
@@ -674,6 +865,32 @@ def _build_api_result(
         "build": {
             "version": _package_version(),
             "commit": os.getenv("DOCOPS_COMMIT_SHA", "unknown"),
+        },
+    }
+
+
+def _build_trace_payload(
+    *,
+    request_id: str,
+    exit_code: int,
+    timing: dict[str, int],
+    subprocess_pid: int | None,
+    effective: EffectiveConfig,
+) -> dict[str, Any]:
+    return {
+        "request_id": request_id,
+        "exit_code": exit_code,
+        "timing": timing,
+        "subprocess": {
+            "pid": subprocess_pid,
+            "start_method": os.getenv("DOCOPS_MP_START", "spawn"),
+        },
+        "effective": {
+            "preset": effective.preset,
+            "format_mode": effective.format_mode,
+            "format_baseline": effective.format_baseline,
+            "format_fix_mode": effective.format_fix_mode,
+            "format_report": effective.format_report,
         },
     }
 
@@ -690,16 +907,31 @@ def _error_response(
     status_code: int,
     error_code: str,
     message: str,
+    request_id: str,
     detail: dict[str, Any] | None = None,
 ) -> JSONResponse:
+    payload_detail = dict(detail or {})
+    payload_detail["request_id"] = request_id
+
     return JSONResponse(
         status_code=status_code,
+        headers={"X-Docops-Request-Id": request_id},
         content={
             "error_code": error_code,
             "message": message,
-            "detail": detail or {},
+            "detail": payload_detail,
         },
     )
+
+
+async def _iter_file_chunks(path: Path, chunk_size: int = 1024 * 1024) -> AsyncIterator[bytes]:
+    with path.open("rb") as handle:
+        while True:
+            data = handle.read(chunk_size)
+            if not data:
+                break
+            yield data
+            await asyncio.sleep(0)
 
 
 def _cleanup_now(zip_path: Path | None, tmp_dir: Path) -> None:
@@ -724,3 +956,7 @@ def _safe_remove_file(path: Path) -> None:
 
 def _safe_remove_dir(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
+
+
+def _elapsed_ms(start: float) -> int:
+    return int((time.perf_counter() - start) * 1000)

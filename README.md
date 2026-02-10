@@ -97,6 +97,7 @@ grep -i "X-Docops-Exit-Code" headers.txt
 
 API 返回说明：
 `200` 返回 zip，响应头 `X-Docops-Exit-Code` 表示执行结果（`0/2/3/4`）。
+所有响应都包含 `X-Docops-Request-Id`（可用于排障关联）。
 `strict` 格式失败时仍返回 zip（`X-Docops-Exit-Code: 4`）。
 zip 固定包含：
 `out.docx`
@@ -106,8 +107,10 @@ zip 固定包含：
 `api_result.json`
 可选包含：
 `out.suggested_policy.yaml`
+`trace.json`（仅当 `DOCOPS_DEBUG_ARTIFACTS=1`）
 
 API 默认静默：默认 `format_report=json`，不输出 human 摘要/WARNING 到服务日志。
+zip 使用流式响应返回，避免一次性读入内存。
 统一错误体：
 `{"error_code":"...","message":"...","detail":{...}}`
 
@@ -115,6 +118,16 @@ API 默认静默：默认 `format_report=json`，不输出 human 摘要/WARNING 
 上传大小 `25MB`（环境变量：`DOCOPS_MAX_UPLOAD_BYTES`）
 请求超时 `60s`（环境变量：`DOCOPS_REQUEST_TIMEOUT_SECONDS`）
 超时会终止执行子进程，不会在后台继续运行。
+进程内并发上限 `2`（环境变量：`DOCOPS_MAX_CONCURRENCY`）
+并发等待超时 `0s`（环境变量：`DOCOPS_QUEUE_TIMEOUT_SECONDS`，`0` 表示立即拒绝并返回 `429`）
+开启 `DOCOPS_DEBUG_ARTIFACTS=1` 时，zip 内会额外包含 `trace.json`。
+
+`api_result.json` 新增：
+- `request_id`
+- `timing.total_ms`
+- `timing.subprocess_ms`
+- `timing.zip_ms`
+- `timing.queue_wait_ms`
 
 退出码：
 `0` 成功

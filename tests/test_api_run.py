@@ -36,6 +36,15 @@ def _zip_map(content: bytes) -> dict[str, bytes]:
         return {name: archive.read(name) for name in archive.namelist()}
 
 
+def _assert_timing_payload(payload: dict[str, object]) -> None:
+    timing = payload["timing"]
+    assert isinstance(timing, dict)
+    for key in ("total_ms", "subprocess_ms", "zip_ms", "queue_wait_ms"):
+        value = timing[key]
+        assert isinstance(value, int)
+        assert value >= 0
+
+
 @pytest.mark.anyio
 async def test_healthz_ok() -> None:
     transport = httpx.ASGITransport(app=app)
@@ -65,6 +74,8 @@ async def test_run_quick_returns_zip_with_required_files() -> None:
 
     assert response.status_code == 200
     assert response.headers["X-Docops-Exit-Code"] == "0"
+    request_id = response.headers["X-Docops-Request-Id"]
+    assert request_id
 
     zipped = _zip_map(response.content)
     required = {
@@ -80,6 +91,8 @@ async def test_run_quick_returns_zip_with_required_files() -> None:
     assert api_result["exit_code"] == 0
     assert api_result["effective"]["format_mode"] == "report"
     assert api_result["effective"]["format_report"] == "json"
+    assert api_result["request_id"] == request_id
+    _assert_timing_payload(api_result)
 
 
 @pytest.mark.anyio
@@ -101,6 +114,7 @@ async def test_run_strict_format_fail_returns_zip_with_exit_code_4() -> None:
 
     assert response.status_code == 200
     assert response.headers["X-Docops-Exit-Code"] == "4"
+    request_id = response.headers["X-Docops-Request-Id"]
 
     zipped = _zip_map(response.content)
     assert "out.docx" in zipped
@@ -110,6 +124,8 @@ async def test_run_strict_format_fail_returns_zip_with_exit_code_4() -> None:
     api_result = json.loads(zipped["api_result.json"].decode("utf-8"))
     assert api_result["exit_code"] == 4
     assert api_result["effective"]["format_mode"] == "strict"
+    assert api_result["request_id"] == request_id
+    _assert_timing_payload(api_result)
 
 
 @pytest.mark.anyio
@@ -134,8 +150,10 @@ async def test_run_conflict_returns_400_json() -> None:
         )
 
     assert response.status_code == 400
+    assert response.headers["X-Docops-Request-Id"]
     payload = response.json()
     assert payload["error_code"] == "INVALID_ARGUMENT_CONFLICT"
+    assert payload["detail"]["request_id"] == response.headers["X-Docops-Request-Id"]
 
 
 @pytest.mark.anyio
@@ -152,8 +170,10 @@ async def test_run_invalid_docx_returns_415() -> None:
         )
 
     assert response.status_code == 415
+    assert response.headers["X-Docops-Request-Id"]
     payload = response.json()
     assert payload["error_code"] == "INVALID_MEDIA_TYPE"
+    assert payload["detail"]["request_id"] == response.headers["X-Docops-Request-Id"]
 
 
 @pytest.mark.anyio
@@ -174,8 +194,10 @@ async def test_run_invalid_task_json_returns_400() -> None:
         )
 
     assert response.status_code == 400
+    assert response.headers["X-Docops-Request-Id"]
     payload = response.json()
     assert payload["error_code"] == "INVALID_JSON"
+    assert payload["detail"]["request_id"] == response.headers["X-Docops-Request-Id"]
 
 
 @pytest.mark.anyio
@@ -196,6 +218,7 @@ async def test_zip_contains_fixed_set_and_api_result_matches_header() -> None:
         )
 
     assert response.status_code == 200
+    request_id = response.headers["X-Docops-Request-Id"]
 
     zipped = _zip_map(response.content)
     names = set(zipped.keys())
@@ -211,3 +234,35 @@ async def test_zip_contains_fixed_set_and_api_result_matches_header() -> None:
 
     api_result = json.loads(zipped["api_result.json"].decode("utf-8"))
     assert str(api_result["exit_code"]) == response.headers["X-Docops-Exit-Code"]
+    assert api_result["request_id"] == request_id
+    _assert_timing_payload(api_result)
+
+
+@pytest.mark.anyio
+async def test_debug_artifacts_include_trace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DOCOPS_DEBUG_ARTIFACTS", "1")
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/run",
+            files={
+                "template": (
+                    "template.docx",
+                    _build_docx_bytes(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ),
+                "task": ("task.json", _task_bytes(), "application/json"),
+            },
+            data={"skill": "meeting_notice"},
+        )
+
+    assert response.status_code == 200
+    request_id = response.headers["X-Docops-Request-Id"]
+
+    zipped = _zip_map(response.content)
+    assert "trace.json" in zipped
+
+    trace_payload = json.loads(zipped["trace.json"].decode("utf-8"))
+    assert trace_payload["request_id"] == request_id
+    assert isinstance(trace_payload["timing"], dict)
