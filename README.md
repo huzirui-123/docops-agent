@@ -114,6 +114,7 @@ API 默认静默：默认 `format_report=json`，不输出 human 摘要/WARNING 
 默认限制：
 上传大小 `25MB`（环境变量：`DOCOPS_MAX_UPLOAD_BYTES`）
 请求超时 `60s`（环境变量：`DOCOPS_REQUEST_TIMEOUT_SECONDS`）
+超时会终止执行子进程，不会在后台继续运行。
 
 退出码：
 `0` 成功

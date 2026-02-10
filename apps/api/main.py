@@ -2,35 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.metadata
 import json
+import multiprocessing as mp
 import os
-import queue
 import shutil
 import tempfile
-import threading
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
-from docx import Document
 from fastapi import BackgroundTasks, FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
-from apps.cli.io import (
-    build_output_paths,
-    write_render_output_atomic,
-    write_suggested_policy_atomic,
-)
+from apps.api.runner_process import RunnerRequest, RunnerResponse, run_pipeline_worker
+from apps.cli.io import build_output_paths
 from core.format.policy_loader import load_policy
-from core.format.suggested_policy import build_suggested_policy
-from core.orchestrator.pipeline import run_task
-from core.skills.base import Skill
-from core.skills.meeting_notice import MeetingNoticeSkill
 from core.skills.models import TaskSpec
-from core.utils.errors import MissingRequiredFieldsError, TemplateError
 
 app = FastAPI(title="docops-agent API", version="0.1.0")
 
@@ -57,12 +49,6 @@ class EffectiveConfig:
     format_baseline: FormatBaseline
     format_fix_mode: FormatFixMode
     format_report: FormatReportMode
-
-
-@dataclass(frozen=True)
-class RunExecutionResult:
-    exit_code: int
-    message: str
 
 
 class ApiRequestError(Exception):
@@ -137,8 +123,8 @@ async def run_v1(
             field_name="task",
         )
 
-        task_spec = _load_task_spec(task_path)
-        selected_skill = _resolve_skill(skill)
+        _load_task_spec(task_path)
+        selected_skill_name = _resolve_skill(skill)
 
         effective = _resolve_effective_config(
             preset_input=preset,
@@ -154,34 +140,22 @@ async def run_v1(
             policy_path = tmp_dir / "policy.yaml"
             policy_path.write_text(policy_yaml, encoding="utf-8")
 
-        policy_model = _load_policy_with_api_error(policy_path)
+        _load_policy_with_api_error(policy_path)
 
-        run_result = _run_pipeline_with_timeout(
+        run_result = await _run_pipeline_with_timeout(
             timeout_seconds=timeout_seconds,
-            task_spec=task_spec,
+            tmp_dir=tmp_dir,
             template_path=template_path,
-            selected_skill=selected_skill,
-            policy_model=policy_model,
+            task_path=task_path,
+            selected_skill_name=selected_skill_name,
+            policy_path=policy_path,
             effective=effective,
+            export_suggested_policy=export_suggested_policy,
         )
-
-        if run_result.output is None:
-            raise RuntimeError("Pipeline did not produce render output")
-
         paths = build_output_paths(tmp_dir)
-        write_render_output_atomic(paths, run_result.output)
-
-        suggested_policy_path: Path | None = None
-        if export_suggested_policy:
-            suggested_policy_path = tmp_dir / "out.suggested_policy.yaml"
-            template_for_suggested = Document(str(template_path))
-            source_doc = (
-                template_for_suggested
-                if template_for_suggested is not None
-                else run_result.output.document
-            )
-            suggested_payload = build_suggested_policy(source_doc, policy_model)
-            write_suggested_policy_atomic(suggested_policy_path, suggested_payload)
+        suggested_policy_path = (
+            tmp_dir / "out.suggested_policy.yaml" if export_suggested_policy else None
+        )
 
         api_result_path = tmp_dir / "api_result.json"
         _write_json_atomic(
@@ -210,6 +184,8 @@ async def run_v1(
             paths.format_report,
             api_result_path,
         ]
+        if suggested_policy_path is not None and not suggested_policy_path.exists():
+            raise RuntimeError("Missing output artifact: out.suggested_policy.yaml")
         for required in required_paths:
             if not required.exists():
                 raise RuntimeError(f"Missing output artifact: {required.name}")
@@ -240,13 +216,13 @@ async def run_v1(
             message=exc.message,
             detail=exc.detail,
         )
-    except TimeoutError:
+    except PipelineTimeoutError as exc:
         _cleanup_now(zip_path, tmp_dir)
         return _error_response(
             status_code=408,
             error_code="REQUEST_TIMEOUT",
             message="request timed out",
-            detail={"timeout_seconds": _timeout_seconds()},
+            detail=exc.detail,
         )
     except Exception as exc:  # noqa: BLE001
         _cleanup_now(zip_path, tmp_dir)
@@ -260,98 +236,140 @@ async def run_v1(
 
 @dataclass
 class _PipelineResult:
-    output: Any | None
     exit_code: int
     message: str
 
 
-def _run_pipeline_with_timeout(
+class PipelineTimeoutError(TimeoutError):
+    """Raised when subprocess execution exceeds timeout."""
+
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float,
+        pid: int | None,
+        terminated: bool,
+        include_pid: bool,
+    ) -> None:
+        detail: dict[str, Any] = {
+            "timeout_seconds": timeout_seconds,
+            "terminated": terminated,
+        }
+        if include_pid and pid is not None:
+            detail["timed_out_pid"] = pid
+
+        super().__init__("request timed out")
+        self.detail = detail
+
+
+async def _run_pipeline_with_timeout(
     *,
     timeout_seconds: float,
-    task_spec: TaskSpec,
+    tmp_dir: Path,
     template_path: Path,
-    selected_skill: Skill,
-    policy_model,
+    task_path: Path,
+    selected_skill_name: str,
+    policy_path: Path | None,
     effective: EffectiveConfig,
+    export_suggested_policy: bool,
 ) -> _PipelineResult:
-    """Execute pipeline with timeout using an isolated thread.
+    """Execute pipeline in subprocess and enforce hard timeout."""
 
-    Keep timeout behavior explicit without depending on asyncio thread helpers.
-    This helper keeps timeout behavior explicit and deterministic.
-    """
+    include_pid = os.getenv("DOCOPS_TEST_MODE") == "1"
+    start_method = os.getenv("DOCOPS_MP_START", "spawn")
+    ctx = cast(Any, mp.get_context(start_method))
+    recv_conn, send_conn = ctx.Pipe(duplex=False)
 
-    outcome: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+    request = RunnerRequest(
+        tmp_dir=str(tmp_dir),
+        template_path=str(template_path),
+        task_path=str(task_path),
+        skill_name=selected_skill_name,
+        policy_path=str(policy_path) if policy_path is not None else None,
+        unsupported_mode="error",
+        format_mode=effective.format_mode,
+        format_baseline=effective.format_baseline,
+        format_fix_mode=effective.format_fix_mode,
+        export_suggested_policy=export_suggested_policy,
+    )
+    process = ctx.Process(
+        target=run_pipeline_worker,
+        args=(request, send_conn),
+        name="docops-api-runner",
+        daemon=True,
+    )
 
-    def _runner() -> None:
-        try:
-            result = _run_pipeline_sync(
-                task_spec,
-                template_path,
-                selected_skill,
-                policy_model,
-                effective,
+    try:
+        process.start()
+    finally:
+        send_conn.close()
+
+    deadline = time.monotonic() + timeout_seconds
+    response_payload: RunnerResponse | None = None
+
+    try:
+        while True:
+            if recv_conn.poll(0.0):
+                response_payload = cast(RunnerResponse, recv_conn.recv())
+                break
+            if not process.is_alive():
+                break
+            if time.monotonic() >= deadline:
+                terminated = _terminate_process(process)
+                raise PipelineTimeoutError(
+                    timeout_seconds=timeout_seconds,
+                    pid=process.pid,
+                    terminated=terminated,
+                    include_pid=include_pid,
+                )
+            await asyncio.sleep(0.01)
+
+        if response_payload is None and recv_conn.poll(0.0):
+            response_payload = cast(RunnerResponse, recv_conn.recv())
+
+        process.join(timeout=0.5)
+        if process.is_alive():
+            _terminate_process(process)
+            raise RuntimeError("Runner subprocess did not exit cleanly")
+
+        if response_payload is None:
+            raise RuntimeError("Runner subprocess exited without a response payload")
+
+        if not response_payload.ok:
+            error_type = response_payload.error_type
+            error_message = response_payload.error_message
+            raise RuntimeError(
+                f"Runner subprocess failed: {error_type}: {error_message}"
             )
-        except Exception as exc:  # noqa: BLE001
-            outcome.put(("error", exc))
-            return
-        outcome.put(("ok", result))
 
-    worker = threading.Thread(target=_runner, daemon=True, name="docops-api-run")
-    worker.start()
-    worker.join(timeout_seconds)
+        if response_payload.exit_code is None:
+            raise RuntimeError("Runner subprocess returned no exit_code")
 
-    if worker.is_alive():
-        raise TimeoutError
-
-    try:
-        status, payload = outcome.get_nowait()
-    except queue.Empty as exc:
-        raise RuntimeError("Pipeline worker ended without producing a result") from exc
-
-    if status == "error":
-        error = cast(Exception, payload)
-        raise error
-
-    return cast(_PipelineResult, payload)
-
-
-def _run_pipeline_sync(
-    task_spec: TaskSpec,
-    template_path: Path,
-    selected_skill: Skill,
-    policy_model,
-    effective: EffectiveConfig,
-) -> _PipelineResult:
-    template_document = Document(str(template_path))
-
-    try:
-        output = run_task(
-            task_spec=task_spec,
-            template_document=template_document,
-            skill=selected_skill,
-            policy=policy_model,
-            unsupported_mode="error",
-            format_mode=effective.format_mode,
-            format_baseline=effective.format_baseline,
-            format_fix_mode=effective.format_fix_mode,
-        )
-    except TemplateError as exc:
         return _PipelineResult(
-            output=exc.render_output,
-            exit_code=3,
-            message="template unsupported placeholders",
+            exit_code=response_payload.exit_code,
+            message=response_payload.message,
         )
-    except MissingRequiredFieldsError as exc:
-        return _PipelineResult(
-            output=exc.render_output,
-            exit_code=2,
-            message="missing required fields",
-        )
+    finally:
+        try:
+            recv_conn.close()
+        finally:
+            if process.is_alive():
+                _terminate_process(process)
 
-    if effective.format_mode == "strict" and not output.format_report.passed:
-        return _PipelineResult(output=output, exit_code=4, message="format validation failed")
 
-    return _PipelineResult(output=output, exit_code=0, message="success")
+def _terminate_process(process: mp.Process) -> bool:
+    """Terminate/kill subprocess and wait for exit."""
+
+    if not process.is_alive():
+        return True
+
+    process.terminate()
+    process.join(timeout=0.5)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=0.5)
+
+    return not process.is_alive()
 
 
 def _resolve_effective_config(
@@ -509,9 +527,9 @@ def _load_task_spec(task_path: Path) -> TaskSpec:
         ) from exc
 
 
-def _resolve_skill(skill_name: str) -> Skill:
+def _resolve_skill(skill_name: str) -> str:
     if skill_name == "meeting_notice":
-        return MeetingNoticeSkill()
+        return skill_name
     raise ApiRequestError(
         status_code=400,
         error_code="INVALID_ARGUMENT",
