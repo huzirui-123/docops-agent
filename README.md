@@ -13,6 +13,9 @@ Document Ops Agent MVP（无 LLM）。
 运行单次生成：
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out`
 
+当前支持的 skill：
+`meeting_notice`
+
 覆盖控制：
 `--force` 覆盖已有输出（默认行为，若覆盖会打印 INFO）。
 `--no-overwrite` 禁止覆盖，若输出已存在则返回退出码 `1`。
@@ -99,6 +102,7 @@ API 返回说明：
 `200` 返回 zip，响应头 `X-Docops-Exit-Code` 表示执行结果（`0/2/3/4`）。
 所有响应都包含 `X-Docops-Request-Id`（可用于排障关联）。
 `strict` 格式失败时仍返回 zip（`X-Docops-Exit-Code: 4`）。
+`skill` 参数当前支持：`meeting_notice`（传入不支持值会返回 `400`，并在 `detail.supported_skills` 给出可用列表）。
 zip 固定包含：
 `out.docx`
 `out.replace_log.json`

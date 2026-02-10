@@ -29,8 +29,8 @@ from core.orchestrator.pipeline import run_task
 from core.render.debug_dump import DebugReport, collect_suspicious_runs
 from core.render.models import RenderOutput
 from core.skills.base import Skill
-from core.skills.meeting_notice import MeetingNoticeSkill
 from core.skills.models import TaskSpec
+from core.skills.registry import create_skill, list_supported_skills
 from core.utils.errors import MissingRequiredFieldsError, TemplateError
 
 app = typer.Typer(help="Document Ops Agent CLI", rich_markup_mode=None)
@@ -431,9 +431,13 @@ def _load_task_spec(path: Path) -> TaskSpec:
 
 
 def _resolve_skill(skill_name: str) -> Skill:
-    if skill_name == "meeting_notice":
-        return MeetingNoticeSkill()
-    raise ValueError(f"Unsupported skill: {skill_name}")
+    try:
+        return create_skill(skill_name)
+    except ValueError as exc:
+        supported = ", ".join(list_supported_skills())
+        raise ValueError(
+            f"Unsupported skill: {skill_name}. Supported skills: {supported}"
+        ) from exc
 
 
 def _safe_write_exit1_fallback(

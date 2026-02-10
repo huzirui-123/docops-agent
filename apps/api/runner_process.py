@@ -21,8 +21,8 @@ from core.format.policy_loader import load_policy
 from core.format.suggested_policy import build_suggested_policy
 from core.orchestrator.pipeline import run_task
 from core.skills.base import Skill
-from core.skills.meeting_notice import MeetingNoticeSkill
 from core.skills.models import TaskSpec
+from core.skills.registry import create_skill
 from core.utils.errors import MissingRequiredFieldsError, TemplateError
 
 FormatMode = Literal["report", "strict", "off"]
@@ -137,9 +137,7 @@ def _run_worker_request(request: RunnerRequest) -> RunnerResponse:
 
 
 def _resolve_skill(skill_name: str) -> Skill:
-    if skill_name == "meeting_notice":
-        return MeetingNoticeSkill()
-    raise ValueError(f"Unsupported skill: {skill_name}")
+    return create_skill(skill_name)
 
 
 def _load_task_spec(task_path: Path) -> TaskSpec:

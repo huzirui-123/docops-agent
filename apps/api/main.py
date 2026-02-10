@@ -27,6 +27,7 @@ from apps.api.runner_process import RunnerRequest, RunnerResponse, run_pipeline_
 from apps.cli.io import build_output_paths
 from core.format.policy_loader import load_policy
 from core.skills.models import TaskSpec
+from core.skills.registry import create_skill, list_supported_skills
 
 app = FastAPI(title="docops-agent API", version="0.1.0")
 
@@ -224,7 +225,6 @@ async def run_v1(
         subprocess_ms = _elapsed_ms(subprocess_started)
 
         paths = build_output_paths(tmp_dir)
-        api_result_path = tmp_dir / "api_result.json"
         suggested_policy_path = (
             tmp_dir / "out.suggested_policy.yaml" if export_suggested_policy else None
         )
@@ -242,96 +242,52 @@ async def run_v1(
         if suggested_policy_path is not None and not suggested_policy_path.exists():
             raise RuntimeError("Missing output artifact: out.suggested_policy.yaml")
 
-        # First pass measures zip packaging time, second pass ships final artifacts with timing.
-        trace_path = tmp_dir / "trace.json" if _debug_artifacts_enabled() else None
-
-        timing_measure = {
+        timing_payload = {
             "queue_wait_ms": queue_wait_ms,
             "subprocess_ms": subprocess_ms,
             "zip_ms": 0,
             "total_ms": _elapsed_ms(request_started),
         }
-        _write_json_atomic(
-            api_result_path,
-            _build_api_result(
-                exit_code=run_result.exit_code,
-                message=run_result.message,
-                request_id=request_id,
-                input_payload={
-                    "skill": skill,
-                    "preset": preset,
-                    "format_mode": format_mode,
-                    "format_baseline": format_baseline,
-                    "format_fix_mode": format_fix_mode,
-                    "format_report": format_report,
-                    "policy_yaml_provided": policy_yaml is not None,
-                    "export_suggested_policy": export_suggested_policy,
-                },
-                effective=effective,
-                timing=timing_measure,
-            ),
+        api_result_payload = _build_api_result(
+            exit_code=run_result.exit_code,
+            message=run_result.message,
+            request_id=request_id,
+            input_payload={
+                "skill": skill,
+                "preset": preset,
+                "format_mode": format_mode,
+                "format_baseline": format_baseline,
+                "format_fix_mode": format_fix_mode,
+                "format_report": format_report,
+                "policy_yaml_provided": policy_yaml is not None,
+                "export_suggested_policy": export_suggested_policy,
+            },
+            effective=effective,
+            timing=timing_payload,
         )
-        if trace_path is not None:
-            _write_json_atomic(
-                trace_path,
-                _build_trace_payload(
-                    request_id=request_id,
-                    exit_code=run_result.exit_code,
-                    timing=timing_measure,
-                    subprocess_pid=run_result.subprocess_pid,
-                    effective=effective,
-                ),
+        trace_payload = (
+            _build_trace_payload(
+                request_id=request_id,
+                exit_code=run_result.exit_code,
+                timing=timing_payload,
+                subprocess_pid=run_result.subprocess_pid,
+                effective=effective,
             )
+            if _debug_artifacts_enabled()
+            else None
+        )
 
         optional_paths: list[Path] = []
         if suggested_policy_path is not None:
             optional_paths.append(suggested_policy_path)
 
-        zip_started = time.perf_counter()
-        measured_zip = _create_zip(required_paths + [api_result_path], optional_paths)
-        measured_zip_ms = _elapsed_ms(zip_started)
-        _safe_remove_file(measured_zip)
-
-        timing_final = {
-            "queue_wait_ms": queue_wait_ms,
-            "subprocess_ms": subprocess_ms,
-            "zip_ms": measured_zip_ms,
-            "total_ms": _elapsed_ms(request_started),
-        }
-        _write_json_atomic(
-            api_result_path,
-            _build_api_result(
-                exit_code=run_result.exit_code,
-                message=run_result.message,
-                request_id=request_id,
-                input_payload={
-                    "skill": skill,
-                    "preset": preset,
-                    "format_mode": format_mode,
-                    "format_baseline": format_baseline,
-                    "format_fix_mode": format_fix_mode,
-                    "format_report": format_report,
-                    "policy_yaml_provided": policy_yaml is not None,
-                    "export_suggested_policy": export_suggested_policy,
-                },
-                effective=effective,
-                timing=timing_final,
-            ),
+        zip_path = _create_zip_with_metadata(
+            required_paths=required_paths,
+            optional_paths=optional_paths,
+            api_result_payload=api_result_payload,
+            trace_payload=trace_payload,
+            request_started=request_started,
         )
-        if trace_path is not None:
-            _write_json_atomic(
-                trace_path,
-                _build_trace_payload(
-                    request_id=request_id,
-                    exit_code=run_result.exit_code,
-                    timing=timing_final,
-                    subprocess_pid=run_result.subprocess_pid,
-                    effective=effective,
-                ),
-            )
-            optional_paths.append(trace_path)
-
-        zip_path = _create_zip(required_paths + [api_result_path], optional_paths)
 
         headers = {
             "X-Docops-Exit-Code": str(run_result.exit_code),
@@ -644,14 +600,20 @@ def _load_task_spec(task_path: Path) -> TaskSpec:
 
 
 def _resolve_skill(skill_name: str) -> str:
-    if skill_name == "meeting_notice":
-        return skill_name
-    raise ApiRequestError(
-        status_code=400,
-        error_code="INVALID_ARGUMENT",
-        message="unsupported skill",
-        detail={"field": "skill", "value": skill_name},
-    )
+    try:
+        create_skill(skill_name)
+    except ValueError as exc:
+        raise ApiRequestError(
+            status_code=400,
+            error_code="INVALID_ARGUMENT",
+            message="unsupported skill",
+            detail={
+                "field": "skill",
+                "value": skill_name,
+                "supported_skills": list_supported_skills(),
+            },
+        ) from exc
+    return skill_name
 
 
 def _load_policy_with_api_error(policy_path: Path | None):
@@ -810,26 +772,21 @@ def _debug_artifacts_enabled() -> bool:
     return os.getenv("DOCOPS_DEBUG_ARTIFACTS", "0") == "1"
 
 
-def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        dir=path.parent,
-        delete=False,
-        prefix=f"{path.name}.",
-        suffix=".tmp",
-    ) as tmp:
-        tmp_path = Path(tmp.name)
-        json.dump(payload, tmp, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    tmp_path.replace(path)
+def _create_zip_with_metadata(
+    *,
+    required_paths: list[Path],
+    optional_paths: list[Path],
+    api_result_payload: dict[str, Any],
+    trace_payload: dict[str, Any] | None,
+    request_started: float,
+) -> Path:
+    """Create one zip archive with artifacts and embedded API metadata."""
 
-
-def _create_zip(required_paths: list[Path], optional_paths: list[Path]) -> Path:
     fd, raw_zip = tempfile.mkstemp(prefix="docops-api-zip-", suffix=".zip")
     os.close(fd)
     zip_path = Path(raw_zip)
 
+    zip_started = time.perf_counter()
     with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
         for artifact in required_paths:
             archive.write(artifact, arcname=artifact.name)
@@ -837,7 +794,48 @@ def _create_zip(required_paths: list[Path], optional_paths: list[Path]) -> Path:
             if artifact.exists():
                 archive.write(artifact, arcname=artifact.name)
 
+        zip_ms = _elapsed_ms(zip_started)
+        total_ms = _elapsed_ms(request_started)
+        archive.writestr(
+            "api_result.json",
+            _dump_json(
+                _with_timing(
+                    api_result_payload,
+                    zip_ms=zip_ms,
+                    total_ms=total_ms,
+                )
+            ),
+        )
+
+        if trace_payload is not None:
+            archive.writestr(
+                "trace.json",
+                _dump_json(
+                    _with_timing(
+                        trace_payload,
+                        zip_ms=zip_ms,
+                        total_ms=total_ms,
+                    )
+                ),
+            )
+
     return zip_path
+
+
+def _with_timing(payload: dict[str, Any], *, zip_ms: int, total_ms: int) -> dict[str, Any]:
+    """Copy payload and override zip/total timing fields."""
+
+    updated = dict(payload)
+    timing_raw = updated.get("timing")
+    timing = dict(timing_raw) if isinstance(timing_raw, dict) else {}
+    timing["zip_ms"] = zip_ms
+    timing["total_ms"] = total_ms
+    updated["timing"] = timing
+    return updated
+
+
+def _dump_json(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _build_api_result(
