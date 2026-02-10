@@ -68,6 +68,53 @@ human 摘要在 run 结束（四件套写盘后）统一打印一次。
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --format-mode off`
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out --export-suggested-policy ./suggested_policy.yaml`
 
+## API
+启动（示例）：
+`poetry run uvicorn apps.api.main:app --host 0.0.0.0 --port 8000`
+
+健康检查：
+`curl -s http://127.0.0.1:8000/healthz`
+
+quick 运行（默认静默，返回 zip）：
+```bash
+curl -sS -X POST "http://127.0.0.1:8000/v1/run" \
+  -F "template=@./template.docx;type=application/vnd.openxmlformats-officedocument.wordprocessingml.document" \
+  -F "task=@./task.json;type=application/json" \
+  -F "skill=meeting_notice" \
+  -o result.zip -D headers.txt
+```
+
+strict 运行并读取 exit_code：
+```bash
+curl -sS -X POST "http://127.0.0.1:8000/v1/run" \
+  -F "template=@./template.docx;type=application/vnd.openxmlformats-officedocument.wordprocessingml.document" \
+  -F "task=@./task.json;type=application/json" \
+  -F "skill=meeting_notice" \
+  -F "preset=strict" \
+  -o result.zip -D headers.txt
+grep -i "X-Docops-Exit-Code" headers.txt
+```
+
+API 返回说明：
+`200` 返回 zip，响应头 `X-Docops-Exit-Code` 表示执行结果（`0/2/3/4`）。
+`strict` 格式失败时仍返回 zip（`X-Docops-Exit-Code: 4`）。
+zip 固定包含：
+`out.docx`
+`out.replace_log.json`
+`out.missing_fields.json`
+`out.format_report.json`
+`api_result.json`
+可选包含：
+`out.suggested_policy.yaml`
+
+API 默认静默：默认 `format_report=json`，不输出 human 摘要/WARNING 到服务日志。
+统一错误体：
+`{"error_code":"...","message":"...","detail":{...}}`
+
+默认限制：
+上传大小 `25MB`（环境变量：`DOCOPS_MAX_UPLOAD_BYTES`）
+请求超时 `60s`（环境变量：`DOCOPS_REQUEST_TIMEOUT_SECONDS`）
+
 退出码：
 `0` 成功
 `2` 缺必填字段
