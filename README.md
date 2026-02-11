@@ -104,6 +104,12 @@ human 摘要在 run 结束（四件套写盘后）统一打印一次。
 健康检查：
 `curl -s http://127.0.0.1:8000/healthz`
 
+元数据（前端自举）：
+`curl -s http://127.0.0.1:8000/v1/meta`
+
+内置 Web 控制台：
+`http://127.0.0.1:8000/web`
+
 quick 运行（默认静默，返回 zip）：
 ```bash
 curl -sS -X POST "http://127.0.0.1:8000/v1/run" \
@@ -127,10 +133,13 @@ grep -i "X-Docops-Exit-Code" headers.txt
 API 返回说明：
 `200` 返回 zip，响应头 `X-Docops-Exit-Code` 表示执行结果（`0/2/3/4`）。
 所有响应都包含 `X-Docops-Request-Id`（可用于排障关联）。
+`/v1/meta` 返回 `supported_skills`、`supported_task_types`、`supported_presets`、`task_payload_schemas`，前端应以该接口为准，不应硬编码。
 `strict` 格式失败时仍返回 zip（`X-Docops-Exit-Code: 4`）。
 `skill` 参数当前支持：`meeting_notice`、`training_notice`、`inspection_record`。
 传入不支持 skill 会返回 `400`，并在 `detail.supported_skills` 给出可用列表。
 若 `skill` 与 `task.json` 的 `task_type` 不一致，会返回 `400 INVALID_ARGUMENT_CONFLICT`。
+`strict` 是独立开关语义（仅强制 `format_mode=strict`），不等价于 preset 映射。
+`strict` 不可与显式 `format_mode/format_baseline/format_fix_mode/format_report` 混用，混用返回 `400 INVALID_ARGUMENT_CONFLICT`。
 zip 固定包含：
 `out.docx`
 `out.replace_log.json`
@@ -145,6 +154,8 @@ API 默认静默：默认 `format_report=json`，不输出 human 摘要/WARNING 
 zip 使用流式响应返回，避免一次性读入内存。
 统一错误体：
 `{"error_code":"...","message":"...","detail":{...}}`
+
+Web 控制台是内置调试/演示界面，不含鉴权。线上暴露前请通过反向代理增加鉴权与访问控制。
 
 默认限制：
 上传大小 `25MB`（环境变量：`DOCOPS_MAX_UPLOAD_BYTES`）

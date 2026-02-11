@@ -266,3 +266,70 @@ async def test_debug_artifacts_include_trace(monkeypatch: pytest.MonkeyPatch) ->
     trace_payload = json.loads(zipped["trace.json"].decode("utf-8"))
     assert trace_payload["request_id"] == request_id
     assert isinstance(trace_payload["timing"], dict)
+
+
+@pytest.mark.anyio
+async def test_strict_alias_only_overrides_mode_not_baseline_or_fix_mode() -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/run",
+            files={
+                "template": (
+                    "template.docx",
+                    _build_docx_bytes(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ),
+                "task": ("task.json", _task_bytes(), "application/json"),
+            },
+            data={
+                "skill": "meeting_notice",
+                "preset": "template",
+                "strict": "true",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["X-Docops-Exit-Code"] == "0"
+    zipped = _zip_map(response.content)
+    api_result = json.loads(zipped["api_result.json"].decode("utf-8"))
+    effective = api_result["effective"]
+    assert effective["format_mode"] == "strict"
+    assert effective["format_baseline"] == "template"
+    assert effective["format_fix_mode"] == "none"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("format_mode", "report"),
+        ("format_baseline", "template"),
+        ("format_fix_mode", "safe"),
+        ("format_report", "json"),
+    ],
+)
+async def test_strict_conflicts_with_any_explicit_format_argument(
+    field_name: str,
+    field_value: str,
+) -> None:
+    data = {"skill": "meeting_notice", "strict": "true", field_name: field_value}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/run",
+            files={
+                "template": (
+                    "template.docx",
+                    _build_docx_bytes(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ),
+                "task": ("task.json", _task_bytes(), "application/json"),
+            },
+            data=data,
+        )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error_code"] == "INVALID_ARGUMENT_CONFLICT"
+    assert field_name in payload["detail"]["conflicting_fields"]

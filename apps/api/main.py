@@ -17,17 +17,17 @@ import zipfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Literal, cast
+from typing import Annotated, Any, Literal, cast, get_args, get_origin
 
 from fastapi import FastAPI, File, Form, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
 from starlette.background import BackgroundTask
 
 from apps.api.runner_process import RunnerRequest, RunnerResponse, run_pipeline_worker
 from apps.cli.io import build_output_paths
 from core.format.policy_loader import load_policy
-from core.skills.models import TaskSpec
+from core.skills.models import TASK_PAYLOAD_SCHEMAS, TaskSpec, supported_task_types
 from core.skills.registry import create_skill, list_supported_skills
 
 app = FastAPI(title="docops-agent API", version="0.1.0")
@@ -129,12 +129,45 @@ async def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/v1/meta")
+async def meta_v1() -> JSONResponse:
+    """Metadata endpoint for web/bootstrap clients."""
+
+    request_id = uuid.uuid4().hex
+    payload = {
+        "supported_skills": list_supported_skills(),
+        "supported_task_types": supported_task_types(),
+        "supported_presets": list(_PRESET_TO_FORMAT),
+        "task_payload_schemas": _task_payload_summaries(),
+        "version": app.version,
+    }
+    return JSONResponse(
+        status_code=200,
+        headers={"X-Docops-Request-Id": request_id},
+        content=payload,
+    )
+
+
+@app.get("/web")
+async def web_console() -> HTMLResponse:
+    """Built-in web console entry point."""
+
+    request_id = uuid.uuid4().hex
+    html_path = Path(__file__).resolve().parent / "static" / "web_console.html"
+    html = html_path.read_text(encoding="utf-8")
+    return HTMLResponse(
+        content=html,
+        headers={"X-Docops-Request-Id": request_id},
+    )
+
+
 @app.post("/v1/run", response_model=None)
 async def run_v1(
     template: Annotated[UploadFile, File(...)],
     task: Annotated[UploadFile, File(...)],
     skill: Annotated[str, Form()] = "meeting_notice",
     preset: Annotated[str | None, Form()] = None,
+    strict: Annotated[bool | None, Form()] = None,
     format_mode: Annotated[str | None, Form()] = None,
     format_baseline: Annotated[str | None, Form()] = None,
     format_fix_mode: Annotated[str | None, Form()] = None,
@@ -218,6 +251,7 @@ async def run_v1(
         failure_stage = "validate_inputs"
         effective = _resolve_effective_config(
             preset_input=preset,
+            strict_input=strict,
             format_mode_input=format_mode,
             format_baseline_input=format_baseline,
             format_fix_mode_input=format_fix_mode,
@@ -539,6 +573,7 @@ def _terminate_process(process: mp.Process) -> bool:
 def _resolve_effective_config(
     *,
     preset_input: str | None,
+    strict_input: bool | None,
     format_mode_input: str | None,
     format_baseline_input: str | None,
     format_fix_mode_input: str | None,
@@ -570,6 +605,33 @@ def _resolve_effective_config(
                         ("format_fix_mode", format_fix_mode_input),
                         ("format_report", format_report_input),
                         ("policy_yaml", policy_yaml_input),
+                    )
+                    if value is not None
+                ]
+            },
+        )
+
+    if strict_input is not None and any(
+        value is not None
+        for value in (
+            format_mode_input,
+            format_baseline_input,
+            format_fix_mode_input,
+            format_report_input,
+        )
+    ):
+        raise ApiRequestError(
+            status_code=400,
+            error_code="INVALID_ARGUMENT_CONFLICT",
+            message="strict cannot be combined with explicit format_* arguments",
+            detail={
+                "conflicting_fields": [
+                    name
+                    for name, value in (
+                        ("format_mode", format_mode_input),
+                        ("format_baseline", format_baseline_input),
+                        ("format_fix_mode", format_fix_mode_input),
+                        ("format_report", format_report_input),
                     )
                     if value is not None
                 ]
@@ -623,6 +685,9 @@ def _resolve_effective_config(
             allowed={"human", "json", "both"},
         ),
     )
+
+    if strict_input is True:
+        mode = "strict"
 
     return EffectiveConfig(
         preset=preset,
@@ -1069,3 +1134,68 @@ def _log_event(level: int, event: str, request_id: str, **fields: Any) -> None:
         **fields,
     }
     logger.log(level, _dump_json(payload))
+
+
+def _task_payload_summaries() -> dict[str, dict[str, Any]]:
+    summaries: dict[str, dict[str, Any]] = {}
+    for task_type in supported_task_types():
+        payload_model = TASK_PAYLOAD_SCHEMAS[task_type]
+        fields: dict[str, dict[str, Any]] = {}
+        for field_name in sorted(payload_model.model_fields):
+            model_field = payload_model.model_fields[field_name]
+            annotation = model_field.annotation
+            fields[field_name] = {
+                "type": _annotation_to_type(annotation),
+                "required": model_field.is_required(),
+                "nullable": _annotation_is_nullable(annotation),
+            }
+
+        extra_policy = payload_model.model_config.get("extra")
+        summaries[task_type] = {
+            "fields": fields,
+            "extra_policy": str(extra_policy) if extra_policy is not None else "allow",
+        }
+    return summaries
+
+
+def _annotation_is_nullable(annotation: Any) -> bool:
+    if annotation is None or annotation is type(None):
+        return True
+    origin = get_origin(annotation)
+    if origin is None:
+        return False
+    return any(_annotation_is_nullable(arg) for arg in get_args(annotation))
+
+
+def _annotation_to_type(annotation: Any) -> str:
+    if annotation is None or annotation is type(None):
+        return "none"
+    origin = get_origin(annotation)
+    if origin is None:
+        name = getattr(annotation, "__name__", str(annotation))
+        if name.lower().startswith("strict"):
+            name = name[len("strict") :]
+        return name.lower()
+
+    if origin is list:
+        args = get_args(annotation)
+        inner = _annotation_to_type(args[0]) if args else "any"
+        return f"list[{inner}]"
+    if origin is dict:
+        args = get_args(annotation)
+        if len(args) == 2:
+            return f"dict[{_annotation_to_type(args[0])},{_annotation_to_type(args[1])}]"
+        return "dict"
+    if origin is tuple:
+        tuple_args = ",".join(_annotation_to_type(arg) for arg in get_args(annotation))
+        return f"tuple[{tuple_args}]"
+
+    # Covers unions (including PEP 604) and other typing wrappers.
+    union_args = [arg for arg in get_args(annotation) if arg is not type(None)]
+    if union_args:
+        if len(union_args) == 1:
+            return _annotation_to_type(union_args[0])
+        return " | ".join(_annotation_to_type(arg) for arg in union_args)
+
+    origin_name = getattr(origin, "__name__", str(origin))
+    return origin_name.lower()

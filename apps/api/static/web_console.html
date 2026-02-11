@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DocOps Web Console</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 24px;
+        line-height: 1.4;
+      }
+      h1 {
+        margin-top: 0;
+      }
+      form {
+        display: grid;
+        gap: 12px;
+        max-width: 960px;
+      }
+      label {
+        display: grid;
+        gap: 4px;
+      }
+      textarea {
+        min-height: 140px;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }
+      #result {
+        margin-top: 16px;
+        padding: 12px;
+        border: 1px solid #ccc;
+        white-space: pre-wrap;
+      }
+      #schema {
+        margin-top: 16px;
+        padding: 12px;
+        border: 1px solid #ccc;
+        max-width: 960px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>DocOps Web Console</h1>
+    <p>Use this page for local testing and demos. Production requires external auth/proxy.</p>
+
+    <form id="run-form">
+      <div class="row">
+        <label>
+          Template (.docx)
+          <input id="template-file" type="file" accept=".docx" required />
+        </label>
+        <label>
+          Skill
+          <select id="skill" required></select>
+        </label>
+        <label>
+          Preset
+          <select id="preset" required></select>
+        </label>
+      </div>
+
+      <div class="row">
+        <label>
+          <span>Strict mode (independent flag)</span>
+          <input id="strict" type="checkbox" />
+        </label>
+        <label>
+          <span>Export suggested policy</span>
+          <input id="export-suggested-policy" type="checkbox" />
+        </label>
+      </div>
+
+      <label>
+        Task JSON
+        <textarea id="task-json" required>{"task_type":"meeting_notice","payload":{"meeting_title":"Weekly meeting"}}</textarea>
+      </label>
+
+      <label>
+        policy_yaml (optional text)
+        <textarea id="policy-yaml" placeholder="Leave empty to use default policy"></textarea>
+      </label>
+
+      <button id="run-btn" type="submit">Run</button>
+    </form>
+
+    <div id="result">Ready.</div>
+
+    <section id="schema">
+      <h2>Task Payload Schemas</h2>
+      <pre id="schema-json">loading...</pre>
+    </section>
+
+    <script>
+      const skillEl = document.getElementById("skill");
+      const presetEl = document.getElementById("preset");
+      const strictEl = document.getElementById("strict");
+      const templateEl = document.getElementById("template-file");
+      const taskJsonEl = document.getElementById("task-json");
+      const policyYamlEl = document.getElementById("policy-yaml");
+      const exportSuggestedEl = document.getElementById("export-suggested-policy");
+      const resultEl = document.getElementById("result");
+      const schemaEl = document.getElementById("schema-json");
+
+      function setResult(message) {
+        resultEl.textContent = message;
+      }
+
+      function parseTaskJson() {
+        try {
+          const parsed = JSON.parse(taskJsonEl.value);
+          if (!parsed || typeof parsed !== "object") {
+            return { ok: false, message: "task.json must be a JSON object." };
+          }
+          return { ok: true, value: parsed };
+        } catch (error) {
+          return { ok: false, message: `task.json parse error: ${String(error)}` };
+        }
+      }
+
+      function checkTaskSkillConsistency(taskObject) {
+        const taskType = taskObject.task_type;
+        const skill = skillEl.value;
+        if (typeof taskType !== "string") {
+          return { ok: false, message: "task_type must be a string." };
+        }
+        if (taskType !== skill) {
+          return {
+            ok: false,
+            message: `task_type (${taskType}) must match selected skill (${skill}).`,
+          };
+        }
+        return { ok: true };
+      }
+
+      async function loadMeta() {
+        const response = await fetch("/v1/meta", { method: "GET" });
+        const requestId = response.headers.get("X-Docops-Request-Id") || "unknown";
+        if (!response.ok) {
+          throw new Error(`Failed to load /v1/meta (request_id=${requestId})`);
+        }
+        const meta = await response.json();
+
+        skillEl.innerHTML = "";
+        for (const skill of meta.supported_skills || []) {
+          const option = document.createElement("option");
+          option.value = skill;
+          option.textContent = skill;
+          skillEl.appendChild(option);
+        }
+
+        presetEl.innerHTML = "";
+        for (const preset of meta.supported_presets || []) {
+          const option = document.createElement("option");
+          option.value = preset;
+          option.textContent = preset;
+          presetEl.appendChild(option);
+        }
+
+        schemaEl.textContent = JSON.stringify(meta.task_payload_schemas || {}, null, 2);
+        setResult(`Meta loaded. request_id=${requestId}`);
+      }
+
+      async function submitRun(event) {
+        event.preventDefault();
+
+        if (!templateEl.files || templateEl.files.length === 0) {
+          setResult("Please select a template .docx file.");
+          return;
+        }
+
+        const parsedTask = parseTaskJson();
+        if (!parsedTask.ok) {
+          setResult(parsedTask.message);
+          return;
+        }
+
+        const consistency = checkTaskSkillConsistency(parsedTask.value);
+        if (!consistency.ok) {
+          setResult(consistency.message);
+          return;
+        }
+
+        const form = new FormData();
+        form.append("template", templateEl.files[0], templateEl.files[0].name || "template.docx");
+        form.append("task", new Blob([taskJsonEl.value], { type: "application/json" }), "task.json");
+        form.append("skill", skillEl.value);
+        form.append("preset", presetEl.value);
+        form.append("strict", strictEl.checked ? "true" : "false");
+        form.append(
+          "export_suggested_policy",
+          exportSuggestedEl.checked ? "true" : "false"
+        );
+
+        if (policyYamlEl.value.trim() !== "") {
+          form.append("policy_yaml", policyYamlEl.value);
+        }
+
+        setResult("Running...");
+        const response = await fetch("/v1/run", { method: "POST", body: form });
+        const requestId = response.headers.get("X-Docops-Request-Id") || "unknown";
+        const exitCode = response.headers.get("X-Docops-Exit-Code");
+
+        if (response.status === 200) {
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = "docops_outputs.zip";
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          URL.revokeObjectURL(url);
+          setResult(`Done. request_id=${requestId} exit_code=${exitCode ?? "unknown"}`);
+          return;
+        }
+
+        let payload;
+        try {
+          payload = await response.json();
+        } catch (error) {
+          const text = await response.text();
+          setResult(
+            `Error ${response.status}. request_id=${requestId}. response=${text || String(error)}`
+          );
+          return;
+        }
+
+        setResult(
+          `Error ${response.status}. request_id=${requestId}. ${JSON.stringify(payload, null, 2)}`
+        );
+      }
+
+      document.getElementById("run-form").addEventListener("submit", submitRun);
+      loadMeta().catch((error) => setResult(String(error)));
+    </script>
+  </body>
+</html>
