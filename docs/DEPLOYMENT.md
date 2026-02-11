@@ -130,6 +130,10 @@ python scripts/summarize_logs.py --json /var/log/docops-api.log
 
 ## CI Stability Smoke
 
+Authoritative script entrypoints:
+- `scripts/ci_smoke.py`
+- `scripts/ci_thresholds.py`
+
 Use:
 ```bash
 poetry run python scripts/ci_smoke.py \
@@ -169,6 +173,8 @@ When CI smoke fails:
 - check `artifacts/ci_result.md` first for quick diagnosis
 - then inspect `artifacts/server.log` and `artifacts/log_summary.json`
 - locally reproduce with the same command shown in `ci_result.md`
+- in GitHub Actions, install uvicorn into Poetry venv:
+  - `poetry run python -m pip install uvicorn`
 
 ## Behavioral Contract (unchanged)
 

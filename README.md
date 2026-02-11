@@ -182,6 +182,7 @@ Web 控制台是内置调试/演示界面，不含鉴权。线上暴露前请通
 CI 稳定性 smoke（本地可复现）：
 `poetry run python scripts/ci_smoke.py --port 0 --repeat 3 --repeat-warmup 1 --requests 20 --concurrency 6 --skill meeting_notice --artifacts-dir artifacts`
 详细说明与阈值配置见：`docs/DEPLOYMENT.md`
+权威入口脚本路径：`scripts/ci_smoke.py`、`scripts/ci_thresholds.py`
 
 `api_result.json` 新增：
 - `request_id`
