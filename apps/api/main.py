@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import json
+import logging
 import multiprocessing as mp
 import os
 import shutil
@@ -30,6 +31,7 @@ from core.skills.models import TaskSpec
 from core.skills.registry import create_skill, list_supported_skills
 
 app = FastAPI(title="docops-agent API", version="0.1.0")
+logger = logging.getLogger("docops.api")
 
 FormatMode = Literal["report", "strict", "off"]
 FormatBaseline = Literal["template", "policy"]
@@ -63,6 +65,12 @@ class _PipelineResult:
     exit_code: int
     message: str
     subprocess_pid: int | None
+
+
+@dataclass(frozen=True)
+class _ZipBuildResult:
+    zip_path: Path
+    timing: dict[str, int]
 
 
 @dataclass
@@ -138,6 +146,7 @@ async def run_v1(
 
     request_started = time.perf_counter()
     request_id = uuid.uuid4().hex
+    failure_stage = "init"
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="docops-api-run-"))
     zip_path: Path | None = None
@@ -148,9 +157,19 @@ async def run_v1(
     subprocess_ms = 0
 
     try:
+        failure_stage = "validate_inputs"
         limiter = _get_concurrency_limiter()
         slot_acquired, queue_wait_ms = await _try_acquire_concurrency_slot(limiter)
         if not slot_acquired:
+            _log_event(
+                logging.ERROR,
+                "error",
+                request_id,
+                error_code="TOO_MANY_REQUESTS",
+                status_code=429,
+                failure_stage=failure_stage,
+                queue_wait_ms=queue_wait_ms,
+            )
             return _error_response(
                 status_code=429,
                 error_code="TOO_MANY_REQUESTS",
@@ -165,6 +184,7 @@ async def run_v1(
         max_upload_bytes = _max_upload_bytes()
         timeout_seconds = _timeout_seconds()
 
+        failure_stage = "upload"
         _validate_upload_name(template.filename, expected_suffix=".docx", field_name="template")
         _validate_upload_name(task.filename, expected_suffix=".json", field_name="task")
 
@@ -192,20 +212,10 @@ async def run_v1(
             field_name="task",
         )
 
+        failure_stage = "validate_task"
         task_spec = _load_task_spec(task_path)
-        selected_skill_name = _resolve_skill(skill)
-        if selected_skill_name != task_spec.task_type:
-            raise ApiRequestError(
-                status_code=400,
-                error_code="INVALID_ARGUMENT_CONFLICT",
-                message="skill and task_type must match",
-                detail={
-                    "field": "skill",
-                    "skill": selected_skill_name,
-                    "task_type": task_spec.task_type,
-                },
-            )
 
+        failure_stage = "validate_inputs"
         effective = _resolve_effective_config(
             preset_input=preset,
             format_mode_input=format_mode,
@@ -222,6 +232,41 @@ async def run_v1(
 
         _load_policy_with_api_error(policy_path)
 
+        _log_event(
+            logging.INFO,
+            "start",
+            request_id,
+            skill=skill,
+            task_type=task_spec.task_type,
+            preset_input=preset,
+            effective={
+                "preset": effective.preset,
+                "format_mode": effective.format_mode,
+                "format_baseline": effective.format_baseline,
+                "format_fix_mode": effective.format_fix_mode,
+                "format_report": effective.format_report,
+            },
+            max_upload_bytes=max_upload_bytes,
+            timeout_seconds=timeout_seconds,
+            queue_wait_ms=queue_wait_ms,
+            policy_yaml_provided=policy_yaml is not None,
+        )
+
+        failure_stage = "validate_skill"
+        selected_skill_name = _resolve_skill(skill)
+        if selected_skill_name != task_spec.task_type:
+            raise ApiRequestError(
+                status_code=400,
+                error_code="INVALID_ARGUMENT_CONFLICT",
+                message="skill and task_type must match",
+                detail={
+                    "field": "skill",
+                    "skill": selected_skill_name,
+                    "task_type": task_spec.task_type,
+                },
+            )
+
+        failure_stage = "run_subprocess"
         subprocess_started = time.perf_counter()
         run_result = await _run_pipeline_with_timeout(
             timeout_seconds=timeout_seconds,
@@ -253,6 +298,7 @@ async def run_v1(
         if suggested_policy_path is not None and not suggested_policy_path.exists():
             raise RuntimeError("Missing output artifact: out.suggested_policy.yaml")
 
+        failure_stage = "package_zip"
         timing_payload = {
             "queue_wait_ms": queue_wait_ms,
             "subprocess_ms": subprocess_ms,
@@ -292,14 +338,25 @@ async def run_v1(
         if suggested_policy_path is not None:
             optional_paths.append(suggested_policy_path)
 
-        zip_path = _create_zip_with_metadata(
+        zip_result = _create_zip_with_metadata(
             required_paths=required_paths,
             optional_paths=optional_paths,
             api_result_payload=api_result_payload,
             trace_payload=trace_payload,
             request_started=request_started,
         )
+        zip_path = zip_result.zip_path
 
+        failure_stage = "respond"
+        _log_event(
+            logging.INFO,
+            "done",
+            request_id,
+            exit_code=run_result.exit_code,
+            timing=zip_result.timing,
+            subprocess_pid=run_result.subprocess_pid,
+            debug_trace_enabled=trace_payload is not None,
+        )
         headers = {
             "X-Docops-Exit-Code": str(run_result.exit_code),
             "X-Docops-Request-Id": request_id,
@@ -313,6 +370,14 @@ async def run_v1(
             background=background,
         )
     except ApiRequestError as exc:
+        _log_event(
+            logging.ERROR,
+            "error",
+            request_id,
+            error_code=exc.error_code,
+            status_code=exc.status_code,
+            failure_stage=failure_stage,
+        )
         _cleanup_now(zip_path, tmp_dir)
         return _error_response(
             status_code=exc.status_code,
@@ -322,6 +387,14 @@ async def run_v1(
             detail=exc.detail,
         )
     except PipelineTimeoutError as exc:
+        _log_event(
+            logging.ERROR,
+            "error",
+            request_id,
+            error_code="REQUEST_TIMEOUT",
+            status_code=408,
+            failure_stage=failure_stage,
+        )
         _cleanup_now(zip_path, tmp_dir)
         return _error_response(
             status_code=408,
@@ -331,6 +404,14 @@ async def run_v1(
             detail=exc.detail,
         )
     except Exception as exc:  # noqa: BLE001
+        _log_event(
+            logging.ERROR,
+            "error",
+            request_id,
+            error_code="INTERNAL_ERROR",
+            status_code=500,
+            failure_stage=failure_stage,
+        )
         _cleanup_now(zip_path, tmp_dir)
         return _error_response(
             status_code=500,
@@ -790,7 +871,7 @@ def _create_zip_with_metadata(
     api_result_payload: dict[str, Any],
     trace_payload: dict[str, Any] | None,
     request_started: float,
-) -> Path:
+) -> _ZipBuildResult:
     """Create one zip archive with artifacts and embedded API metadata."""
 
     fd, raw_zip = tempfile.mkstemp(prefix="docops-api-zip-", suffix=".zip")
@@ -830,7 +911,17 @@ def _create_zip_with_metadata(
                 ),
             )
 
-    return zip_path
+    final_timing = _with_timing(
+        api_result_payload,
+        zip_ms=zip_ms,
+        total_ms=total_ms,
+    ).get("timing")
+    timing_dict = (
+        cast(dict[str, int], final_timing)
+        if isinstance(final_timing, dict)
+        else {"zip_ms": zip_ms, "total_ms": total_ms}
+    )
+    return _ZipBuildResult(zip_path=zip_path, timing=timing_dict)
 
 
 def _with_timing(payload: dict[str, Any], *, zip_ms: int, total_ms: int) -> dict[str, Any]:
@@ -969,3 +1060,12 @@ def _safe_remove_dir(path: Path) -> None:
 
 def _elapsed_ms(start: float) -> int:
     return int((time.perf_counter() - start) * 1000)
+
+
+def _log_event(level: int, event: str, request_id: str, **fields: Any) -> None:
+    payload = {
+        "event": event,
+        "request_id": request_id,
+        **fields,
+    }
+    logger.log(level, _dump_json(payload))

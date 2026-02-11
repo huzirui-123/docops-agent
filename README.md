@@ -9,6 +9,9 @@ Document Ops Agent MVP（无 LLM）。
 1. 安装依赖：`poetry install`
 2. 质量门禁：`poetry run ruff check .`、`poetry run mypy .`、`poetry run pytest`
 
+## 部署
+部署与运行形态说明见：`docs/DEPLOYMENT.md`
+
 ## CLI
 运行单次生成：
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out`
@@ -95,6 +98,8 @@ human 摘要在 run 结束（四件套写盘后）统一打印一次。
 ## API
 启动（示例）：
 `poetry run uvicorn apps.api.main:app --host 0.0.0.0 --port 8000`
+生产示例：
+`poetry run gunicorn -k uvicorn.workers.UvicornWorker -w 2 apps.api.main:app`
 
 健康检查：
 `curl -s http://127.0.0.1:8000/healthz`
@@ -148,6 +153,9 @@ zip 使用流式响应返回，避免一次性读入内存。
 进程内并发上限 `2`（环境变量：`DOCOPS_MAX_CONCURRENCY`）
 并发等待超时 `0s`（环境变量：`DOCOPS_QUEUE_TIMEOUT_SECONDS`，`0` 表示立即拒绝并返回 `429`）
 开启 `DOCOPS_DEBUG_ARTIFACTS=1` 时，zip 内会额外包含 `trace.json`。
+
+本地压测（需先启动真实服务，不使用 ASGITransport）：
+`python scripts/load_test.py --base-url http://127.0.0.1:8000 --concurrency 8 --requests 20 --skill meeting_notice`
 
 `api_result.json` 新增：
 - `request_id`
