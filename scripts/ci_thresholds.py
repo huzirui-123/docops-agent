@@ -28,53 +28,57 @@ def evaluate(
     log_summary: dict[str, Any],
     th: Thresholds,
 ) -> list[str]:
-    """Return a list of gate failures, empty means pass."""
+    """Return stable failure keys; empty list means pass."""
 
     failures: list[str] = []
 
     leaked_pids = load_summary.get("leaked_pids")
     if th.require_no_leaks and isinstance(leaked_pids, list) and leaked_pids:
-        failures.append(f"leaked_pids: {leaked_pids}")
+        failures.append("leaked_pids")
 
     outcome_counts = log_summary.get("outcome_counts")
     internal_error_count = 0
     if isinstance(outcome_counts, dict):
-        value = outcome_counts.get("internal_error", 0)
-        if isinstance(value, int):
-            internal_error_count = value
-        elif isinstance(value, str) and value.isdigit():
-            internal_error_count = int(value)
+        internal_error_count = _as_int(outcome_counts.get("internal_error")) or 0
     if th.require_internal_error_zero and internal_error_count > 0:
-        failures.append(f"internal_error: {internal_error_count}")
+        failures.append("internal_error")
 
-    tmp_delta_bytes = _as_int(load_summary.get("tmp_delta_bytes"))
+    tmp_delta_bytes = _metric_int(
+        load_summary,
+        "worst_tmp_delta_bytes",
+        "tmp_delta_bytes",
+    )
     if tmp_delta_bytes is not None and tmp_delta_bytes > th.max_tmp_delta_bytes:
-        failures.append(
-            f"tmp_delta_bytes: {tmp_delta_bytes} > {th.max_tmp_delta_bytes}"
-        )
+        failures.append("tmp_delta_bytes")
 
-    tmp_delta_count = _as_int(load_summary.get("tmp_delta_count"))
+    tmp_delta_count = _metric_int(
+        load_summary,
+        "worst_tmp_delta_count",
+        "tmp_delta_count",
+    )
     if tmp_delta_count is not None and tmp_delta_count > th.max_tmp_delta_count:
-        failures.append(
-            f"tmp_delta_count: {tmp_delta_count} > {th.max_tmp_delta_count}"
-        )
+        failures.append("tmp_delta_count")
 
-    total_ms_p95 = _as_int(log_summary.get("total_ms_p95"))
+    total_ms_p95 = _first_int(
+        load_summary.get("worst_total_ms_p95"),
+        load_summary.get("total_ms_p95"),
+        log_summary.get("total_ms_p95"),
+    )
     if total_ms_p95 is not None and total_ms_p95 > th.max_total_ms_p95:
-        failures.append(
-            f"total_ms_p95: {total_ms_p95} > {th.max_total_ms_p95}"
-        )
+        failures.append("total_ms_p95")
 
-    queue_wait_p95 = _as_int(log_summary.get("queue_wait_ms_p95"))
+    queue_wait_p95 = _first_int(
+        load_summary.get("worst_queue_wait_ms_p95"),
+        load_summary.get("queue_wait_ms_p95"),
+        log_summary.get("queue_wait_ms_p95"),
+    )
     if queue_wait_p95 is not None and queue_wait_p95 > th.max_queue_wait_ms_p95:
-        failures.append(
-            f"queue_wait_ms_p95: {queue_wait_p95} > {th.max_queue_wait_ms_p95}"
-        )
+        failures.append("queue_wait_ms_p95")
 
     status_counts = _status_counts(load_summary, log_summary)
     status_429 = status_counts.get("429", 0)
     if not th.allow_429 and status_429 > 0:
-        failures.append(f"http_429: {status_429}")
+        failures.append("http_429")
 
     if th.require_non_200_zero:
         non_200 = 0
@@ -85,9 +89,13 @@ def evaluate(
                 continue
             non_200 += count
         if non_200 > 0:
-            failures.append(f"http_non_200: {non_200}")
+            failures.append("http_non_200")
 
-    return failures
+    return sorted(set(failures))
+
+
+def _metric_int(summary: dict[str, Any], worst_key: str, normal_key: str) -> int | None:
+    return _first_int(summary.get(worst_key), summary.get(normal_key))
 
 
 def _status_counts(load_summary: dict[str, Any], log_summary: dict[str, Any]) -> dict[str, int]:
@@ -102,6 +110,14 @@ def _status_counts(load_summary: dict[str, Any], log_summary: dict[str, Any]) ->
         return {str(key): _as_int(value) or 0 for key, value in log_status.items()}
 
     return {}
+
+
+def _first_int(*values: Any) -> int | None:
+    for value in values:
+        parsed = _as_int(value)
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _as_int(value: Any) -> int | None:
