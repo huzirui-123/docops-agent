@@ -154,6 +154,7 @@ API 默认静默：默认 `format_report=json`，不输出 human 摘要/WARNING 
 zip 使用流式响应返回，避免一次性读入内存。
 统一错误体：
 `{"error_code":"...","message":"...","detail":{...}}`
+所有响应（包括 404/405）都包含 `X-Docops-Request-Id`。
 
 Web 控制台是内置调试/演示界面，不含鉴权。线上暴露前请通过反向代理增加鉴权与访问控制。
 
@@ -164,6 +165,11 @@ Web 控制台是内置调试/演示界面，不含鉴权。线上暴露前请通
 进程内并发上限 `2`（环境变量：`DOCOPS_MAX_CONCURRENCY`）
 并发等待超时 `0s`（环境变量：`DOCOPS_QUEUE_TIMEOUT_SECONDS`，`0` 表示立即拒绝并返回 `429`）
 开启 `DOCOPS_DEBUG_ARTIFACTS=1` 时，zip 内会额外包含 `trace.json`。
+调试入口开关：
+`DOCOPS_ENABLE_WEB_CONSOLE`（默认 `1`）
+`DOCOPS_ENABLE_META`（默认 `1`）
+可选基础鉴权：
+`DOCOPS_WEB_BASIC_AUTH="user:pass"`（作用于 `/web` 与 `/v1/meta`）
 
 本地压测（需先启动真实服务，不使用 ASGITransport）：
 `python scripts/load_test.py --base-url http://127.0.0.1:8000 --concurrency 8 --requests 20 --skill meeting_notice`

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import hmac
 import importlib.metadata
 import json
 import logging
@@ -19,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast, get_args, get_origin
 
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
 from starlette.background import BackgroundTask
@@ -43,6 +46,7 @@ _DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 _DEFAULT_TIMEOUT_SECONDS = 60.0
 _DEFAULT_MAX_CONCURRENCY = 2
 _DEFAULT_QUEUE_TIMEOUT_SECONDS = 0.0
+_BASIC_AUTH_REALM = "docops"
 
 _PRESET_TO_FORMAT: dict[PresetMode, tuple[FormatMode, FormatBaseline, FormatFixMode]] = {
     "quick": ("report", "template", "safe"),
@@ -122,6 +126,34 @@ _limiter_lock = threading.Lock()
 _limiter_cache: _ConcurrencyLimiter | None = None
 
 
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """Ensure every response has a request id header."""
+
+    request_id = uuid.uuid4().hex
+    request.state.request_id = request_id
+    try:
+        response = await call_next(request)
+    except Exception:  # noqa: BLE001
+        _log_event(
+            logging.ERROR,
+            "error",
+            request_id,
+            error_code="INTERNAL_ERROR",
+            status_code=500,
+            failure_stage="middleware",
+        )
+        response = _error_response(
+            status_code=500,
+            error_code="INTERNAL_ERROR",
+            message="internal server error",
+            request_id=request_id,
+            detail={"path": request.url.path},
+        )
+    response.headers.setdefault("X-Docops-Request-Id", request_id)
+    return response
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     """Liveness endpoint."""
@@ -130,10 +162,14 @@ async def healthz() -> dict[str, str]:
 
 
 @app.get("/v1/meta")
-async def meta_v1() -> JSONResponse:
+async def meta_v1(request: Request) -> JSONResponse:
     """Metadata endpoint for web/bootstrap clients."""
 
-    request_id = uuid.uuid4().hex
+    request_id = _request_id_from_request(request)
+    auth_error = _guard_meta_access(request, request_id)
+    if auth_error is not None:
+        return auth_error
+
     payload = {
         "supported_skills": list_supported_skills(),
         "supported_task_types": supported_task_types(),
@@ -148,11 +184,15 @@ async def meta_v1() -> JSONResponse:
     )
 
 
-@app.get("/web")
-async def web_console() -> HTMLResponse:
+@app.get("/web", response_model=None)
+async def web_console(request: Request) -> HTMLResponse | JSONResponse:
     """Built-in web console entry point."""
 
-    request_id = uuid.uuid4().hex
+    request_id = _request_id_from_request(request)
+    auth_error = _guard_web_console_access(request, request_id)
+    if auth_error is not None:
+        return auth_error
+
     html_path = Path(__file__).resolve().parent / "static" / "web_console.html"
     html = html_path.read_text(encoding="utf-8")
     return HTMLResponse(
@@ -163,6 +203,7 @@ async def web_console() -> HTMLResponse:
 
 @app.post("/v1/run", response_model=None)
 async def run_v1(
+    request: Request,
     template: Annotated[UploadFile, File(...)],
     task: Annotated[UploadFile, File(...)],
     skill: Annotated[str, Form()] = "meeting_notice",
@@ -178,7 +219,7 @@ async def run_v1(
     """Run one generation job and return a zip with output artifacts."""
 
     request_started = time.perf_counter()
-    request_id = uuid.uuid4().hex
+    request_id = _request_id_from_request(request)
     failure_stage = "init"
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="docops-api-run-"))
@@ -698,6 +739,119 @@ def _resolve_effective_config(
     )
 
 
+def _request_id_from_request(request: Request) -> str:
+    request_id = getattr(request.state, "request_id", None)
+    if isinstance(request_id, str) and request_id:
+        return request_id
+    generated = uuid.uuid4().hex
+    request.state.request_id = generated
+    return generated
+
+
+def _guard_web_console_access(request: Request, request_id: str) -> JSONResponse | None:
+    if not _web_console_enabled():
+        return _error_response(
+            status_code=404,
+            error_code="NOT_FOUND",
+            message="web console is disabled",
+            request_id=request_id,
+            detail={"path": request.url.path},
+        )
+
+    auth_error = _basic_auth_error_response_if_needed(request, request_id)
+    if auth_error is not None:
+        return auth_error
+    return None
+
+
+def _guard_meta_access(request: Request, request_id: str) -> JSONResponse | None:
+    if not _meta_enabled():
+        return _error_response(
+            status_code=404,
+            error_code="NOT_FOUND",
+            message="meta endpoint is disabled",
+            request_id=request_id,
+            detail={"path": request.url.path},
+        )
+
+    auth_error = _basic_auth_error_response_if_needed(request, request_id)
+    if auth_error is not None:
+        return auth_error
+    return None
+
+
+def _web_console_enabled() -> bool:
+    raw = os.getenv("DOCOPS_ENABLE_WEB_CONSOLE", "1").strip().lower()
+    return raw not in {"0", "false", "off", "no"}
+
+
+def _meta_enabled() -> bool:
+    raw = os.getenv("DOCOPS_ENABLE_META", "1").strip().lower()
+    return raw not in {"0", "false", "off", "no"}
+
+
+def _basic_auth_error_response_if_needed(request: Request, request_id: str) -> JSONResponse | None:
+    expected = _basic_auth_credentials()
+    if expected is None:
+        return None
+
+    if _request_has_valid_basic_auth(request, expected):
+        return None
+
+    return _error_response(
+        status_code=401,
+        error_code="UNAUTHORIZED",
+        message="authentication required",
+        request_id=request_id,
+        detail={
+            "path": request.url.path,
+            "auth_enabled": True,
+        },
+        extra_headers={"WWW-Authenticate": f'Basic realm="{_BASIC_AUTH_REALM}"'},
+    )
+
+
+def _basic_auth_credentials() -> tuple[str, str] | None:
+    raw = os.getenv("DOCOPS_WEB_BASIC_AUTH")
+    if raw is None:
+        return None
+
+    candidate = raw.strip()
+    if not candidate:
+        return None
+
+    if ":" not in candidate:
+        return None
+
+    username, password = candidate.split(":", 1)
+    if not username or not password:
+        return None
+    return username, password
+
+
+def _request_has_valid_basic_auth(request: Request, expected: tuple[str, str]) -> bool:
+    auth_header = request.headers.get("authorization")
+    if auth_header is None:
+        return False
+
+    scheme, _, token = auth_header.partition(" ")
+    if scheme.lower() != "basic" or not token:
+        return False
+
+    try:
+        decoded = base64.b64decode(token.encode("ascii"), validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        return False
+
+    if ":" not in decoded:
+        return False
+    username, password = decoded.split(":", 1)
+    expected_username, expected_password = expected
+    return hmac.compare_digest(username, expected_username) and hmac.compare_digest(
+        password, expected_password
+    )
+
+
 def _normalize_or_default(
     *,
     value: str | None,
@@ -1074,13 +1228,18 @@ def _error_response(
     message: str,
     request_id: str,
     detail: dict[str, Any] | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     payload_detail = dict(detail or {})
     payload_detail["request_id"] = request_id
 
+    headers = {"X-Docops-Request-Id": request_id}
+    if extra_headers is not None:
+        headers.update(extra_headers)
+
     return JSONResponse(
         status_code=status_code,
-        headers={"X-Docops-Request-Id": request_id},
+        headers=headers,
         content={
             "error_code": error_code,
             "message": message,

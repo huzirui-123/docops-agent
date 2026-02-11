@@ -40,6 +40,28 @@ poetry run gunicorn -k uvicorn.workers.UvicornWorker -w 2 apps.api.main:app
 - `DOCOPS_QUEUE_TIMEOUT_SECONDS` (default: `0`)
 - `DOCOPS_MP_START` (default: `spawn`)
 - `DOCOPS_DEBUG_ARTIFACTS` (default: `0`)
+- `DOCOPS_ENABLE_WEB_CONSOLE` (default: `1`)
+- `DOCOPS_ENABLE_META` (default: `1`)
+- `DOCOPS_WEB_BASIC_AUTH` (default: unset, format: `user:pass`)
+
+## Security / Exposure
+
+- `/web` and `/v1/meta` are convenience/debug endpoints.
+- Production recommendation:
+  - disable one or both endpoints, or
+  - place API behind reverse-proxy authentication.
+
+Example:
+```bash
+export DOCOPS_ENABLE_WEB_CONSOLE=0
+export DOCOPS_ENABLE_META=1
+export DOCOPS_WEB_BASIC_AUTH="docops:change-me"
+```
+
+- These toggles do **not** change `/v1/run` semantics.
+- If using Nginx in front of the service, set:
+  - `client_max_body_size >= DOCOPS_MAX_UPLOAD_BYTES`
+  - otherwise uploads can be rejected before reaching the app.
 
 ## Behavioral Contract (unchanged)
 
