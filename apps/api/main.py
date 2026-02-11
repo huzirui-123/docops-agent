@@ -132,9 +132,11 @@ async def request_id_middleware(request: Request, call_next):
 
     request_id = uuid.uuid4().hex
     request.state.request_id = request_id
+    request.state.cleanup_paths = []
     try:
         response = await call_next(request)
     except Exception:  # noqa: BLE001
+        _cleanup_registered_paths(request)
         _log_event(
             logging.ERROR,
             "error",
@@ -142,6 +144,7 @@ async def request_id_middleware(request: Request, call_next):
             error_code="INTERNAL_ERROR",
             status_code=500,
             failure_stage="middleware",
+            outcome="internal_error",
         )
         response = _error_response(
             status_code=500,
@@ -223,6 +226,7 @@ async def run_v1(
     failure_stage = "init"
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="docops-api-run-"))
+    _register_cleanup_path(request, tmp_dir)
     zip_path: Path | None = None
     slot_acquired = False
     limiter: _ConcurrencyLimiter | None = None
@@ -242,6 +246,7 @@ async def run_v1(
                 error_code="TOO_MANY_REQUESTS",
                 status_code=429,
                 failure_stage=failure_stage,
+                outcome=_error_outcome(status_code=429, error_code="TOO_MANY_REQUESTS"),
                 queue_wait_ms=queue_wait_ms,
             )
             return _error_response(
@@ -428,6 +433,8 @@ async def run_v1(
             "done",
             request_id,
             exit_code=run_result.exit_code,
+            outcome=_exit_outcome(run_result.exit_code),
+            http_status=200,
             timing=zip_result.timing,
             subprocess_pid=run_result.subprocess_pid,
             debug_trace_enabled=trace_payload is not None,
@@ -452,6 +459,7 @@ async def run_v1(
             error_code=exc.error_code,
             status_code=exc.status_code,
             failure_stage=failure_stage,
+            outcome=_error_outcome(status_code=exc.status_code, error_code=exc.error_code),
         )
         _cleanup_now(zip_path, tmp_dir)
         return _error_response(
@@ -469,6 +477,7 @@ async def run_v1(
             error_code="REQUEST_TIMEOUT",
             status_code=408,
             failure_stage=failure_stage,
+            outcome=_error_outcome(status_code=408, error_code="REQUEST_TIMEOUT"),
         )
         _cleanup_now(zip_path, tmp_dir)
         return _error_response(
@@ -486,6 +495,7 @@ async def run_v1(
             error_code="INTERNAL_ERROR",
             status_code=500,
             failure_stage=failure_stage,
+            outcome=_error_outcome(status_code=500, error_code="INTERNAL_ERROR"),
         )
         _cleanup_now(zip_path, tmp_dir)
         return _error_response(
@@ -746,6 +756,35 @@ def _request_id_from_request(request: Request) -> str:
     generated = uuid.uuid4().hex
     request.state.request_id = generated
     return generated
+
+
+def _register_cleanup_path(request: Request, path: Path) -> None:
+    """Register a path for best-effort emergency cleanup in middleware error path."""
+
+    cleanup_paths = getattr(request.state, "cleanup_paths", None)
+    if not isinstance(cleanup_paths, list):
+        cleanup_paths = []
+        request.state.cleanup_paths = cleanup_paths
+    cleanup_paths.append(path)
+
+
+def _cleanup_registered_paths(request: Request) -> None:
+    """Best-effort cleanup for paths registered on request.state."""
+
+    cleanup_paths = getattr(request.state, "cleanup_paths", None)
+    if not isinstance(cleanup_paths, list):
+        return
+
+    for raw_path in cleanup_paths:
+        if not isinstance(raw_path, Path):
+            continue
+        try:
+            if raw_path.is_dir():
+                _safe_remove_dir(raw_path)
+            else:
+                _safe_remove_file(raw_path)
+        except Exception:  # noqa: BLE001
+            continue
 
 
 def _guard_web_console_access(request: Request, request_id: str) -> JSONResponse | None:
@@ -1284,6 +1323,32 @@ def _safe_remove_dir(path: Path) -> None:
 
 def _elapsed_ms(start: float) -> int:
     return int((time.perf_counter() - start) * 1000)
+
+
+def _exit_outcome(exit_code: int) -> str:
+    if exit_code == 0:
+        return "ok"
+    if exit_code == 2:
+        return "missing_required"
+    if exit_code == 4:
+        return "strict_failed"
+    return "other_exit_code"
+
+
+def _error_outcome(*, status_code: int, error_code: str) -> str:
+    if status_code == 400:
+        return "bad_request"
+    if status_code == 408:
+        return "timeout"
+    if status_code == 413:
+        return "payload_too_large"
+    if status_code == 429:
+        return "rate_limited"
+    if status_code == 500:
+        return "internal_error"
+    if error_code == "REQUEST_TIMEOUT":
+        return "timeout"
+    return "internal_error"
 
 
 def _log_event(level: int, event: str, request_id: str, **fields: Any) -> None:

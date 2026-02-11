@@ -12,7 +12,11 @@ import asyncio
 import io
 import json
 import math
+import os
+import platform
+import subprocess
 import time
+import zipfile
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +30,7 @@ class RequestResult:
     status_code: int
     latency_ms: int
     request_id: str | None
+    subprocess_pid: int | None
 
 
 def _build_docx_bytes(skill: str) -> bytes:
@@ -84,6 +89,7 @@ async def _run_single(
 ) -> RequestResult:
     started = time.perf_counter()
     request_id: str | None = None
+    subprocess_pid: int | None = None
     status_code = 599
 
     try:
@@ -101,6 +107,8 @@ async def _run_single(
         )
         status_code = response.status_code
         request_id = response.headers.get("X-Docops-Request-Id")
+        if status_code == 200:
+            subprocess_pid = _extract_subprocess_pid_from_zip(response.content)
         if status_code == 408 and request_id is None:
             try:
                 payload = response.json()
@@ -115,6 +123,7 @@ async def _run_single(
         status_code=status_code,
         latency_ms=int((time.perf_counter() - started) * 1000),
         request_id=request_id,
+        subprocess_pid=subprocess_pid,
     )
 
 
@@ -125,6 +134,8 @@ async def _run_load_test(
     concurrency: int,
     requests: int,
     timeout: float,
+    check_subprocess_leaks: bool,
+    leak_grace_ms: int,
 ) -> dict[str, Any]:
     semaphore = asyncio.Semaphore(concurrency)
     template_bytes = _build_docx_bytes(skill)
@@ -147,8 +158,22 @@ async def _run_load_test(
     status_counts = Counter(str(item.status_code) for item in results)
     latencies = [item.latency_ms for item in results]
     timeout_request_ids = [item.request_id for item in results if item.status_code == 408]
+    subprocess_pids_seen = sorted(
+        {
+            item.subprocess_pid
+            for item in results
+            if item.status_code == 200 and isinstance(item.subprocess_pid, int)
+        }
+    )
 
-    return {
+    leaked_pids: list[int] = []
+    pid_check_note = "skipped"
+    if check_subprocess_leaks:
+        await asyncio.sleep(max(0, leak_grace_ms) / 1000)
+        leaked_pids = [pid for pid in subprocess_pids_seen if _pid_exists(pid)]
+        pid_check_note = "checked"
+
+    summary = {
         "base_url": base_url,
         "skill": skill,
         "requests": requests,
@@ -160,8 +185,12 @@ async def _run_load_test(
             "avg": int(sum(latencies) / len(latencies)) if latencies else 0,
         },
         "timeout_request_ids": [rid for rid in timeout_request_ids if rid],
+        "subprocess_pids_seen": subprocess_pids_seen,
+        "leaked_pids": leaked_pids,
+        "leak_check": pid_check_note,
         "note": "Run against a real server process (uvicorn/gunicorn).",
     }
+    return summary
 
 
 def _parse_args() -> argparse.Namespace:
@@ -171,6 +200,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--concurrency", type=int, default=8)
     parser.add_argument("--requests", type=int, default=20)
     parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--check-subprocess-leaks", action="store_true")
+    parser.add_argument("--leak-grace-ms", type=int, default=1500)
     return parser.parse_args()
 
 
@@ -183,9 +214,79 @@ def main() -> None:
             concurrency=args.concurrency,
             requests=args.requests,
             timeout=args.timeout,
+            check_subprocess_leaks=args.check_subprocess_leaks,
+            leak_grace_ms=args.leak_grace_ms,
         )
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    leaked = summary.get("leaked_pids")
+    if isinstance(leaked, list) and leaked:
+        raise SystemExit(1)
+
+
+def _extract_subprocess_pid_from_zip(content: bytes) -> int | None:
+    try:
+        with zipfile.ZipFile(io.BytesIO(content), "r") as archive:
+            if "api_result.json" not in archive.namelist():
+                return None
+            payload = json.loads(archive.read("api_result.json").decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    subprocess_pid = payload.get("subprocess_pid")
+    if isinstance(subprocess_pid, int):
+        return subprocess_pid
+
+    build = payload.get("build")
+    if isinstance(build, dict):
+        nested_pid = build.get("subprocess_pid")
+        if isinstance(nested_pid, int):
+            return nested_pid
+
+    return None
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        import psutil
+
+        return bool(psutil.pid_exists(pid))
+    except Exception:  # noqa: BLE001
+        pass
+
+    if pid <= 0:
+        return False
+
+    if os.name == "posix":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+
+    if os.name == "nt" or platform.system().lower().startswith("win"):
+        try:
+            completed = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except Exception:  # noqa: BLE001
+            return False
+
+        output = f"{completed.stdout}\n{completed.stderr}"
+        return str(pid) in output
+
+    # Unknown platform without psutil: skip precise check.
+    return False
 
 
 if __name__ == "__main__":

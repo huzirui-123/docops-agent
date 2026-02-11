@@ -43,7 +43,12 @@ async def test_api_logs_request_id_for_success(caplog: pytest.LogCaptureFixture)
     request_id = response.headers["X-Docops-Request-Id"]
     messages = [record.message for record in caplog.records if record.name == "docops.api"]
     assert any('"event":"start"' in message and request_id in message for message in messages)
-    assert any('"event":"done"' in message and request_id in message for message in messages)
+    assert any(
+        '"event":"done"' in message
+        and request_id in message
+        and '"outcome":"ok"' in message
+        for message in messages
+    )
 
 
 @pytest.mark.anyio
@@ -76,5 +81,6 @@ async def test_api_logs_request_id_and_error_code_for_failure(
         and request_id in message
         and '"error_code":"INVALID_ARGUMENT_CONFLICT"' in message
         and '"failure_stage":"validate_skill"' in message
+        and '"outcome":"bad_request"' in message
         for message in messages
     )

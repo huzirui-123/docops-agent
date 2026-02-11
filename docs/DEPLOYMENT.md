@@ -31,6 +31,7 @@ poetry run gunicorn -k uvicorn.workers.UvicornWorker -w 2 apps.api.main:app
 - On timeout, API terminates/kills the worker subprocess and returns `408`.
 - ZIP is returned with streaming response.
 - Temporary files are cleaned after response completion via background cleanup.
+- Middleware also performs best-effort cleanup for registered temporary paths when an uncaught exception becomes a `500` response.
 
 ## Environment Variables
 
@@ -62,6 +63,33 @@ export DOCOPS_WEB_BASIC_AUTH="docops:change-me"
 - If using Nginx in front of the service, set:
   - `client_max_body_size >= DOCOPS_MAX_UPLOAD_BYTES`
   - otherwise uploads can be rejected before reaching the app.
+
+## Structured Logging
+
+- API logs are single-line JSON via logger `docops.api`.
+- `/v1/run` `event="done"` now includes:
+  - `outcome`: `ok | missing_required | strict_failed | other_exit_code`
+  - `http_status=200`
+- `/v1/run` `event="error"` includes:
+  - `outcome`: `bad_request | timeout | payload_too_large | rate_limited | internal_error`
+- Logs never include template/task raw content or policy text values.
+
+## Load Test Leak Check
+
+Use:
+```bash
+python scripts/load_test.py \
+  --base-url http://127.0.0.1:8000 \
+  --concurrency 8 \
+  --requests 20 \
+  --check-subprocess-leaks \
+  --leak-grace-ms 1500
+```
+
+- The script parses `api_result.json` from returned zip payloads and tracks observed subprocess pids when available.
+- It then checks whether those pids still exist after a grace period.
+- `leaked_pids` non-empty => script exits with status code `1`.
+- `psutil` is optional; without it, platform fallback checks are used when possible.
 
 ## Behavioral Contract (unchanged)
 
