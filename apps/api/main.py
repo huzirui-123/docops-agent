@@ -192,8 +192,19 @@ async def run_v1(
             field_name="task",
         )
 
-        _load_task_spec(task_path)
+        task_spec = _load_task_spec(task_path)
         selected_skill_name = _resolve_skill(skill)
+        if selected_skill_name != task_spec.task_type:
+            raise ApiRequestError(
+                status_code=400,
+                error_code="INVALID_ARGUMENT_CONFLICT",
+                message="skill and task_type must match",
+                detail={
+                    "field": "skill",
+                    "skill": selected_skill_name,
+                    "task_type": task_spec.task_type,
+                },
+            )
 
         effective = _resolve_effective_config(
             preset_input=preset,

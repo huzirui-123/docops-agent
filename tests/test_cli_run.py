@@ -320,3 +320,34 @@ def test_cli_debug_dump_writes_debug_json() -> None:
         assert "suspicious_runs" in payload["post_pipeline"]
         assert "pre_pipeline" in payload
         assert payload["pre_pipeline"]["suspicious_runs"]
+
+
+def test_cli_skill_task_type_mismatch_returns_1() -> None:
+    with runner.isolated_filesystem() as tmp:
+        root = Path(tmp)
+        template = root / "template.docx"
+        task = root / "task.json"
+        out_dir = root / "out"
+        _write_docx(template)
+        task.write_text(
+            json.dumps({"task_type": "training_notice", "payload": {"training_title": "X"}}),
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                "--template",
+                str(template),
+                "--task",
+                str(task),
+                "--skill",
+                "meeting_notice",
+                "--out-dir",
+                str(out_dir),
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "skill and task_type must match" in result.stdout

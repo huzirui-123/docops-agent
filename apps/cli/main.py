@@ -249,6 +249,12 @@ def run_command(
         task_spec = _load_task_spec(task)
         failure_stage = "resolve_skill"
         selected_skill = _resolve_skill(skill)
+        failure_stage = "validate_task_skill"
+        if selected_skill.name != task_spec.task_type:
+            raise ValueError(
+                "skill and task_type must match: "
+                f"skill={selected_skill.name}, task_type={task_spec.task_type}"
+            )
         failure_stage = "load_policy"
         policy_model = load_policy(policy)
         failure_stage = "load_template"

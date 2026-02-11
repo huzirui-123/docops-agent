@@ -50,7 +50,11 @@ async def test_api_unsupported_skill_returns_supported_list() -> None:
     request_id = response.headers["X-Docops-Request-Id"]
     payload = response.json()
     assert payload["error_code"] == "INVALID_ARGUMENT"
-    assert "meeting_notice" in payload["detail"]["supported_skills"]
+    assert {
+        "meeting_notice",
+        "training_notice",
+        "inspection_record",
+    }.issubset(set(payload["detail"]["supported_skills"]))
     assert payload["detail"]["request_id"] == request_id
 
 
@@ -79,3 +83,31 @@ async def test_api_supported_skill_still_runs_successfully() -> None:
     api_result = json.loads(zipped["api_result.json"].decode("utf-8"))
     assert api_result["request_id"] == request_id
     assert api_result["effective"]["preset"] == "quick"
+
+
+@pytest.mark.anyio
+async def test_api_skill_task_type_mismatch_returns_conflict() -> None:
+    task_payload = {"task_type": "meeting_notice", "payload": {"meeting_title": "Kickoff"}}
+    task_bytes = json.dumps(task_payload).encode("utf-8")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/run",
+            files={
+                "template": (
+                    "template.docx",
+                    _build_docx_bytes(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ),
+                "task": ("task.json", task_bytes, "application/json"),
+            },
+            data={"skill": "training_notice"},
+        )
+
+    assert response.status_code == 400
+    request_id = response.headers["X-Docops-Request-Id"]
+    payload = response.json()
+    assert payload["error_code"] == "INVALID_ARGUMENT_CONFLICT"
+    assert payload["detail"]["request_id"] == request_id
+    assert payload["detail"]["skill"] == "training_notice"
+    assert payload["detail"]["task_type"] == "meeting_notice"
