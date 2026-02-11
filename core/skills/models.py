@@ -4,7 +4,61 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, model_validator
+
+
+class MeetingNoticePayload(BaseModel):
+    """Validated payload for meeting notice tasks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    meeting_title: StrictStr | None = None
+    meeting_date: StrictStr | None = None
+    meeting_time: StrictStr | None = None
+    meeting_location: StrictStr | None = None
+    organizer: StrictStr | None = None
+    attendees: list[StrictStr] | None = None
+
+
+class TrainingNoticePayload(BaseModel):
+    """Validated payload for training notice tasks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    training_title: StrictStr | None = None
+    training_date: StrictStr | None = None
+    training_time: StrictStr | None = None
+    training_location: StrictStr | None = None
+    trainer: StrictStr | None = None
+    organizer: StrictStr | None = None
+    attendees: list[StrictStr] | None = None
+
+
+class InspectionRecordPayload(BaseModel):
+    """Validated payload for inspection record tasks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    inspection_subject: StrictStr | None = None
+    inspection_date: StrictStr | None = None
+    inspector: StrictStr | None = None
+    department: StrictStr | None = None
+    issue_summary: StrictStr | None = None
+    action_required: StrictStr | None = None
+    deadline: StrictStr | None = None
+
+
+TASK_PAYLOAD_SCHEMAS: dict[str, type[BaseModel]] = {
+    "meeting_notice": MeetingNoticePayload,
+    "training_notice": TrainingNoticePayload,
+    "inspection_record": InspectionRecordPayload,
+}
+
+
+def supported_task_types() -> list[str]:
+    """Return supported task types in stable order."""
+
+    return sorted(TASK_PAYLOAD_SCHEMAS)
 
 
 class TaskSpec(BaseModel):
@@ -14,6 +68,19 @@ class TaskSpec(BaseModel):
 
     task_type: str
     payload: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_payload_for_task_type(self) -> TaskSpec:
+        """Validate and normalize payload by task_type schema."""
+
+        payload_model = TASK_PAYLOAD_SCHEMAS.get(self.task_type)
+        if payload_model is None:
+            supported = ", ".join(supported_task_types())
+            raise ValueError(f"Unsupported task_type: {self.task_type}. Supported: {supported}")
+
+        validated = payload_model.model_validate(self.payload)
+        self.payload = validated.model_dump(mode="python")
+        return self
 
 
 class SkillResult(BaseModel):
