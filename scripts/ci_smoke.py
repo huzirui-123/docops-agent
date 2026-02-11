@@ -180,7 +180,10 @@ def main() -> None:
         result["load_summary"] = merged_load_summary
         result["log_summary"] = log_summary
     except Exception as exc:  # noqa: BLE001
-        if not result["tooling_failures"] and not result["stability_failures"]:
+        message = str(exc)
+        if message.startswith("tooling_failure:"):
+            result["tooling_failures"].append(message)
+        elif not result["tooling_failures"] and not result["stability_failures"]:
             result["tooling_failures"].append(
                 f"tooling_failure:ci_smoke_exception:{exc.__class__.__name__}"
             )
@@ -194,13 +197,13 @@ def main() -> None:
     ]
     result["ok"] = not result["failures"]
     result["duration_ms"] = int((time.perf_counter() - started) * 1000)
-
-    ci_result_path.write_text(
-        json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
+    result["server_log_excerpt"] = _read_log_excerpt(server_log_path, line_count=50)
+    _write_ci_result_artifacts(
+        result=result,
+        ci_result_path=ci_result_path,
+        ci_result_md_path=ci_result_md_path,
+        write_md=bool(args.write_md),
     )
-    if args.write_md:
-        ci_result_md_path.write_text(_render_ci_markdown(result), encoding="utf-8")
 
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     raise SystemExit(0 if result["ok"] else 1)
@@ -564,6 +567,29 @@ def _render_ci_markdown(result: dict[str, Any]) -> str:
             f"- queue_wait_ms_p95: {log_summary.get('queue_wait_ms_p95')}",
             f"- status_counts: {load_summary.get('status_counts', {})}",
             "",
+            "## Artifacts",
+        ]
+    )
+
+    paths = result.get("paths")
+    if isinstance(paths, dict):
+        for key, value in paths.items():
+            lines.append(f"- {key}: {value}")
+    else:
+        lines.append("- none")
+
+    rounds = result.get("rounds")
+    if isinstance(rounds, list) and rounds:
+        lines.append("- load_round_summaries:")
+        for entry in rounds:
+            if isinstance(entry, dict):
+                summary_path = entry.get("summary_path")
+                if isinstance(summary_path, str):
+                    lines.append(f"  - {summary_path}")
+
+    lines.extend(
+        [
+            "",
             "## Reproduce",
             (
                 "poetry run python scripts/ci_smoke.py "
@@ -571,8 +597,19 @@ def _render_ci_markdown(result: dict[str, Any]) -> str:
                 f"--concurrency 6 --skill meeting_notice --artifacts-dir artifacts"
             ),
             "",
+            "## server.log excerpt",
         ]
     )
+
+    excerpt = result.get("server_log_excerpt")
+    if isinstance(excerpt, list) and excerpt:
+        lines.append("```text")
+        lines.extend(excerpt)
+        lines.append("```")
+    else:
+        lines.append("(no log lines available)")
+
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -608,6 +645,34 @@ def _parse_int(value: Any, *, default: int) -> int:
         except ValueError:
             return default
     return default
+
+
+def _read_log_excerpt(path: Path, *, line_count: int) -> list[str]:
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:  # noqa: BLE001
+        return []
+    if line_count <= 0:
+        return []
+    return lines[-line_count:]
+
+
+def _write_ci_result_artifacts(
+    *,
+    result: dict[str, Any],
+    ci_result_path: Path,
+    ci_result_md_path: Path,
+    write_md: bool,
+) -> None:
+    ci_result_path.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    should_write_md = write_md or bool(result.get("failures"))
+    if should_write_md:
+        ci_result_md_path.write_text(_render_ci_markdown(result), encoding="utf-8")
 
 
 if __name__ == "__main__":

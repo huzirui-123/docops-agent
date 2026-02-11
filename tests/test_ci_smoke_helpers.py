@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import json
 import socket as socket_mod
+from pathlib import Path
 
-from scripts.ci_smoke import _merge_repeat_summaries, _pick_free_port, _prefix_failures
+from scripts.ci_smoke import (
+    _merge_repeat_summaries,
+    _pick_free_port,
+    _prefix_failures,
+    _render_ci_markdown,
+    _write_ci_result_artifacts,
+)
 
 
 def test_pick_free_port_returns_valid_port(monkeypatch) -> None:
@@ -86,3 +94,70 @@ def test_prefix_failures() -> None:
         "tooling_failure:x",
         "tooling_failure:y",
     ]
+
+
+def test_render_ci_markdown_contains_required_sections() -> None:
+    result = {
+        "ok": False,
+        "duration_ms": 1234,
+        "picked_port": 8001,
+        "repeat": 3,
+        "repeat_warmup": 1,
+        "tooling_failures": ["tooling_failure:healthcheck_failed"],
+        "stability_failures": ["stability_failure:tmp_delta_bytes"],
+        "load_summary": {
+            "leaked_pids": [123],
+            "worst_tmp_delta_count": 8,
+            "worst_tmp_delta_bytes": 64,
+            "status_counts": {"200": 2, "429": 1},
+        },
+        "log_summary": {"total_ms_p95": 2500, "queue_wait_ms_p95": 120},
+        "paths": {
+            "server_log": "artifacts/server.log",
+            "load_summary": "artifacts/load_summary.json",
+            "log_summary": "artifacts/log_summary.json",
+            "ci_result": "artifacts/ci_result.json",
+            "ci_result_md": "artifacts/ci_result.md",
+        },
+        "rounds": [{"summary_path": "artifacts/load_summary.1.json"}],
+        "server_log_excerpt": ["line1", "line2"],
+    }
+    markdown = _render_ci_markdown(result)
+    assert "Overall:" in markdown
+    assert "## Tooling Failures" in markdown
+    assert "## Stability Failures" in markdown
+    assert "## Artifacts" in markdown
+    assert "## Reproduce" in markdown
+    assert "## server.log excerpt" in markdown
+    assert "line1" in markdown
+
+
+def test_write_ci_result_artifacts_writes_markdown_on_failure_even_if_disabled(
+    tmp_path: Path,
+) -> None:
+    json_path = tmp_path / "ci_result.json"
+    md_path = tmp_path / "ci_result.md"
+    result = {
+        "ok": False,
+        "failures": ["tooling_failure:x"],
+        "tooling_failures": ["tooling_failure:x"],
+        "stability_failures": [],
+        "load_summary": {},
+        "log_summary": {},
+        "paths": {"ci_result": str(json_path), "ci_result_md": str(md_path)},
+        "server_log_excerpt": [],
+    }
+
+    _write_ci_result_artifacts(
+        result=result,
+        ci_result_path=json_path,
+        ci_result_md_path=md_path,
+        write_md=False,
+    )
+
+    assert json_path.exists()
+    assert md_path.exists()
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert payload["failures"] == ["tooling_failure:x"]
+    markdown = md_path.read_text(encoding="utf-8")
+    assert "Tooling Failures" in markdown
