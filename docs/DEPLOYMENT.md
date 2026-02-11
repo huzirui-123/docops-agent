@@ -128,6 +128,35 @@ python scripts/summarize_logs.py --json /var/log/docops-api.log
 - Bad JSON lines are tolerated and counted in `parse_errors`.
 - `outcome_counts` can be used directly for alerts/dashboards.
 
+## CI Stability Smoke
+
+Use:
+```bash
+poetry run python scripts/ci_smoke.py \
+  --port 8000 \
+  --requests 20 \
+  --concurrency 6 \
+  --skill meeting_notice \
+  --artifacts-dir artifacts
+```
+
+This runner will:
+- start a local API server process
+- wait for `/healthz`
+- run `scripts/load_test.py` with leak checks and tmp watermark
+- run `scripts/summarize_logs.py`
+- evaluate thresholds and write `artifacts/ci_result.json`
+
+Default threshold env vars (override as needed):
+- `DOCOPS_CI_ALLOW_429=0`
+- `DOCOPS_CI_MAX_TMP_DELTA_BYTES=5242880`
+- `DOCOPS_CI_MAX_TMP_DELTA_COUNT=50`
+- `DOCOPS_CI_MAX_TOTAL_MS_P95=15000`
+- `DOCOPS_CI_MAX_QUEUE_WAIT_MS_P95=3000`
+- `DOCOPS_CI_REQUIRE_NO_LEAKS=1`
+- `DOCOPS_CI_REQUIRE_INTERNAL_ERROR_ZERO=1`
+- `DOCOPS_CI_REQUIRE_NON_200_ZERO=1`
+
 ## Behavioral Contract (unchanged)
 
 - Strict format failure still returns `200 + zip` with `X-Docops-Exit-Code: 4`.
