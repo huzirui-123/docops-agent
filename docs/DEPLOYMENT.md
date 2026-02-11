@@ -83,13 +83,50 @@ python scripts/load_test.py \
   --concurrency 8 \
   --requests 20 \
   --check-subprocess-leaks \
-  --leak-grace-ms 1500
+  --leak-grace-ms 1500 \
+  --tmp-root /tmp \
+  --write-summary /tmp/docops-load-summary.json \
+  --fail-on-leaks
 ```
 
 - The script parses `api_result.json` from returned zip payloads and tracks observed subprocess pids when available.
 - It then checks whether those pids still exist after a grace period.
-- `leaked_pids` non-empty => script exits with status code `1`.
+- `leaked_pids` is always reported in summary.
+- `--fail-on-leaks` makes leaked pids a hard failure (`exit 1`).
 - `psutil` is optional; without it, platform fallback checks are used when possible.
+- If `--tmp-root` is provided, summary includes tmp watermark before/after deltas:
+  - `tmp_before_count/tmp_before_bytes`
+  - `tmp_after_count/tmp_after_bytes`
+  - `tmp_delta_count/tmp_delta_bytes`
+  - `tmp_warnings`
+
+## Tmp Watermark Utility
+
+Use:
+```bash
+python scripts/check_tmp_watermark.py --root /tmp --json
+```
+
+- This utility is observational only and always exits with `0`.
+- Output includes:
+  - `count`
+  - `bytes`
+  - `top_n` (largest children under root)
+  - `warnings`
+
+## Log Summary Utility
+
+Use:
+```bash
+python scripts/summarize_logs.py --json /var/log/docops-api.log
+```
+
+- Aggregates `outcome_counts` and `http_status_counts`.
+- Computes latency percentiles when fields exist:
+  - `queue_wait_ms_p50/p95`
+  - `total_ms_p50/p95` (from `timing.total_ms`)
+- Bad JSON lines are tolerated and counted in `parse_errors`.
+- `outcome_counts` can be used directly for alerts/dashboards.
 
 ## Behavioral Contract (unchanged)
 

@@ -174,7 +174,11 @@ Web 控制台是内置调试/演示界面，不含鉴权。线上暴露前请通
 本地压测（需先启动真实服务，不使用 ASGITransport）：
 `python scripts/load_test.py --base-url http://127.0.0.1:8000 --concurrency 8 --requests 20 --skill meeting_notice`
 检测超时后是否存在子进程残留：
-`python scripts/load_test.py --base-url http://127.0.0.1:8000 --concurrency 8 --requests 20 --check-subprocess-leaks --leak-grace-ms 1500`
+`python scripts/load_test.py --base-url http://127.0.0.1:8000 --concurrency 8 --requests 20 --check-subprocess-leaks --leak-grace-ms 1500 --tmp-root /tmp --write-summary /tmp/docops-load-summary.json --fail-on-leaks`
+查看 tmp 水位：
+`python scripts/check_tmp_watermark.py --root /tmp --json`
+汇总结构化日志：
+`python scripts/summarize_logs.py --json /var/log/docops-api.log`
 
 `api_result.json` 新增：
 - `request_id`
@@ -186,6 +190,7 @@ Web 控制台是内置调试/演示界面，不含鉴权。线上暴露前请通
 结构化日志补充：
 - `event=done` 包含 `outcome`（`ok/missing_required/strict_failed/other_exit_code`）与 `http_status=200`
 - `event=error` 包含 `outcome`（`bad_request/timeout/payload_too_large/rate_limited/internal_error`）
+- `scripts/summarize_logs.py` 可聚合 `outcome_counts/http_status_counts` 与 `p50/p95`（含坏行容错 `parse_errors`）
 
 中间件 500 兜底：
 - 若请求在未捕获异常下进入中间件 500 分支，会执行已注册临时资源的 best-effort 清理。

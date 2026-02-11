@@ -19,6 +19,7 @@ import time
 import zipfile
 from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -31,6 +32,13 @@ class RequestResult:
     latency_ms: int
     request_id: str | None
     subprocess_pid: int | None
+
+
+@dataclass(frozen=True)
+class TmpWatermark:
+    count: int
+    bytes: int
+    warnings: list[str]
 
 
 def _build_docx_bytes(skill: str) -> bytes:
@@ -136,10 +144,14 @@ async def _run_load_test(
     timeout: float,
     check_subprocess_leaks: bool,
     leak_grace_ms: int,
+    tmp_root: Path | None,
 ) -> dict[str, Any]:
     semaphore = asyncio.Semaphore(concurrency)
     template_bytes = _build_docx_bytes(skill)
     task_bytes = _build_task_bytes(skill)
+    tmp_before: TmpWatermark | None = None
+    if tmp_root is not None:
+        tmp_before = scan_tmp_watermark(tmp_root)
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         async def wrapped() -> RequestResult:
@@ -173,6 +185,12 @@ async def _run_load_test(
         leaked_pids = [pid for pid in subprocess_pids_seen if _pid_exists(pid)]
         pid_check_note = "checked"
 
+    tmp_after: TmpWatermark | None = None
+    if tmp_root is not None:
+        tmp_after = scan_tmp_watermark(tmp_root)
+
+    tmp_fields = _tmp_summary_fields(tmp_root=tmp_root, before=tmp_before, after=tmp_after)
+
     summary = {
         "base_url": base_url,
         "skill": skill,
@@ -189,6 +207,7 @@ async def _run_load_test(
         "leaked_pids": leaked_pids,
         "leak_check": pid_check_note,
         "note": "Run against a real server process (uvicorn/gunicorn).",
+        **tmp_fields,
     }
     return summary
 
@@ -202,11 +221,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--check-subprocess-leaks", action="store_true")
     parser.add_argument("--leak-grace-ms", type=int, default=1500)
+    parser.add_argument("--fail-on-leaks", action="store_true")
+    parser.add_argument("--tmp-root")
+    parser.add_argument("--write-summary")
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
+    tmp_root = Path(args.tmp_root).expanduser() if args.tmp_root else None
     summary = asyncio.run(
         _run_load_test(
             base_url=args.base_url,
@@ -216,11 +239,19 @@ def main() -> None:
             timeout=args.timeout,
             check_subprocess_leaks=args.check_subprocess_leaks,
             leak_grace_ms=args.leak_grace_ms,
+            tmp_root=tmp_root,
         )
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    if args.write_summary:
+        summary_path = Path(args.write_summary).expanduser()
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
     leaked = summary.get("leaked_pids")
-    if isinstance(leaked, list) and leaked:
+    if args.fail_on_leaks and isinstance(leaked, list) and leaked:
         raise SystemExit(1)
 
 
@@ -247,6 +278,73 @@ def _extract_subprocess_pid_from_zip(content: bytes) -> int | None:
             return nested_pid
 
     return None
+
+
+def scan_tmp_watermark(root: Path) -> TmpWatermark:
+    count = 0
+    total_bytes = 0
+    warnings: list[str] = []
+
+    if not root.exists():
+        warnings.append(f"root_not_found:{root}")
+        return TmpWatermark(count=0, bytes=0, warnings=warnings)
+
+    try:
+        entries = list(root.rglob("*"))
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"scan_failed:{exc.__class__.__name__}")
+        return TmpWatermark(count=0, bytes=0, warnings=warnings)
+
+    for item in entries:
+        try:
+            if item.is_file():
+                count += 1
+                total_bytes += item.stat().st_size
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"stat_failed:{item}:{exc.__class__.__name__}")
+            continue
+
+    return TmpWatermark(count=count, bytes=total_bytes, warnings=warnings)
+
+
+def _tmp_summary_fields(
+    *,
+    tmp_root: Path | None,
+    before: TmpWatermark | None,
+    after: TmpWatermark | None,
+) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "tmp_root": str(tmp_root) if tmp_root is not None else None,
+        "tmp_before_count": None,
+        "tmp_before_bytes": None,
+        "tmp_after_count": None,
+        "tmp_after_bytes": None,
+        "tmp_delta_count": None,
+        "tmp_delta_bytes": None,
+        "tmp_warnings": [],
+    }
+
+    if tmp_root is None:
+        return fields
+
+    before_count = before.count if before is not None else 0
+    before_bytes = before.bytes if before is not None else 0
+    after_count = after.count if after is not None else 0
+    after_bytes = after.bytes if after is not None else 0
+
+    fields["tmp_before_count"] = before_count
+    fields["tmp_before_bytes"] = before_bytes
+    fields["tmp_after_count"] = after_count
+    fields["tmp_after_bytes"] = after_bytes
+    fields["tmp_delta_count"] = after_count - before_count
+    fields["tmp_delta_bytes"] = after_bytes - before_bytes
+    warnings: list[str] = []
+    if before is not None:
+        warnings.extend(before.warnings)
+    if after is not None:
+        warnings.extend(after.warnings)
+    fields["tmp_warnings"] = warnings
+    return fields
 
 
 def _pid_exists(pid: int) -> bool:
