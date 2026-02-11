@@ -42,7 +42,7 @@ jobs:
       - name: Install uvicorn for smoke runner
         run: python -m pip install uvicorn
       - name: Stability smoke
-        run: poetry run python scripts/ci_smoke.py --port 8000 --requests 20 --concurrency 6 --skill meeting_notice --artifacts-dir artifacts
+        run: poetry run python scripts/ci_smoke.py --port 0 --repeat 3 --repeat-warmup 1 --requests 20 --concurrency 6 --skill meeting_notice --artifacts-dir artifacts
       - name: Upload stability artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -51,5 +51,7 @@ jobs:
           path: |
             artifacts/server.log
             artifacts/load_summary.json
+            artifacts/load_summary.*.json
             artifacts/log_summary.json
             artifacts/ci_result.json
+            artifacts/ci_result.md

@@ -133,7 +133,9 @@ python scripts/summarize_logs.py --json /var/log/docops-api.log
 Use:
 ```bash
 poetry run python scripts/ci_smoke.py \
-  --port 8000 \
+  --port 0 \
+  --repeat 3 \
+  --repeat-warmup 1 \
   --requests 20 \
   --concurrency 6 \
   --skill meeting_notice \
@@ -142,10 +144,16 @@ poetry run python scripts/ci_smoke.py \
 
 This runner will:
 - start a local API server process
+- auto-pick free port when `--port 0` is used
 - wait for `/healthz`
-- run `scripts/load_test.py` with leak checks and tmp watermark
+- run `scripts/load_test.py` for multiple rounds
 - run `scripts/summarize_logs.py`
 - evaluate thresholds and write `artifacts/ci_result.json`
+- write human-readable report `artifacts/ci_result.md`
+
+Warmup rounds are excluded from threshold evaluation.
+This reduces false positives from import/cache startup jitter.
+Thresholds are evaluated on measurement rounds using worst-case aggregation.
 
 Default threshold env vars (override as needed):
 - `DOCOPS_CI_ALLOW_429=0`
@@ -156,6 +164,11 @@ Default threshold env vars (override as needed):
 - `DOCOPS_CI_REQUIRE_NO_LEAKS=1`
 - `DOCOPS_CI_REQUIRE_INTERNAL_ERROR_ZERO=1`
 - `DOCOPS_CI_REQUIRE_NON_200_ZERO=1`
+
+When CI smoke fails:
+- check `artifacts/ci_result.md` first for quick diagnosis
+- then inspect `artifacts/server.log` and `artifacts/log_summary.json`
+- locally reproduce with the same command shown in `ci_result.md`
 
 ## Behavioral Contract (unchanged)
 

@@ -180,7 +180,8 @@ Web 控制台是内置调试/演示界面，不含鉴权。线上暴露前请通
 汇总结构化日志：
 `python scripts/summarize_logs.py --json /var/log/docops-api.log`
 CI 稳定性 smoke（本地可复现）：
-`poetry run python scripts/ci_smoke.py --port 8000 --requests 20 --concurrency 6 --skill meeting_notice --artifacts-dir artifacts`
+`poetry run python scripts/ci_smoke.py --port 0 --repeat 3 --repeat-warmup 1 --requests 20 --concurrency 6 --skill meeting_notice --artifacts-dir artifacts`
+详细说明与阈值配置见：`docs/DEPLOYMENT.md`
 
 `api_result.json` 新增：
 - `request_id`
