@@ -104,6 +104,29 @@ export DOCOPS_ENABLE_WEB_CONSOLE=1
 - For cross-origin browser calls, configure Optional CORS above.
 - This UI layer does **not** change `/v1/run` status codes, error body schema, or artifact rules.
 
+## Web Console Hardening
+
+- `/web` and `/web/static/*` are protected by the same gate and optional BasicAuth:
+  - `DOCOPS_ENABLE_WEB_CONSOLE=0` (default) disables access.
+  - `DOCOPS_WEB_BASIC_AUTH="user:pass"` protects enabled endpoints.
+- Web static responses include web-only security headers:
+  - `Cache-Control: no-store, max-age=0`
+  - `Pragma: no-cache`
+  - `X-Content-Type-Options: nosniff`
+  - `Referrer-Policy: no-referrer`
+  - `X-Frame-Options: DENY`
+  - `Permissions-Policy: geolocation=(), microphone=(), camera=()`
+  - `X-Robots-Tag: noindex, nofollow`
+  - `Content-Security-Policy` with `script-src 'self'` and `frame-ancestors 'none'`
+- CSP `connect-src` default is `'self'`. To allow cross-origin API calls from the console, you need both:
+  - `DOCOPS_WEB_CONNECT_SRC="https://your-api-origin"` (browser connection whitelist)
+  - Optional CORS enabled for API responses:
+    - `DOCOPS_ENABLE_CORS=1`
+    - `DOCOPS_CORS_ALLOW_ORIGINS=...`
+- For production exposure, keep `/web` behind reverse-proxy authentication for both routes:
+  - `location /web`
+  - `location /web/static/`
+
 ## Structured Logging
 
 - API logs are single-line JSON via logger `docops.api`.
