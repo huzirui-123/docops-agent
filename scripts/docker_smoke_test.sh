@@ -8,10 +8,27 @@ BASE_URL="http://127.0.0.1:8000"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"; docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true' EXIT
 
+pick_python() {
+  if command -v python3 >/dev/null 2>&1; then
+    echo "python3"
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    echo "python"
+    return 0
+  fi
+  return 1
+}
+
+PYTHON_BIN="$(pick_python)" || {
+  echo "docker_smoke_test.sh requires python3 or python in PATH" >&2
+  exit 1
+}
+
 json_assert() {
   local file_path="$1"
   local python_code="$2"
-  python - "$file_path" "$python_code" <<'PY'
+  "${PYTHON_BIN}" - "$file_path" "$python_code" <<'PY'
 import json
 import pathlib
 import sys
@@ -27,7 +44,7 @@ PY
 header_value() {
   local header_file="$1"
   local header_name="$2"
-  python - "$header_file" "$header_name" <<'PY'
+  "${PYTHON_BIN}" - "$header_file" "$header_name" <<'PY'
 import pathlib
 import sys
 
@@ -48,7 +65,7 @@ wait_for_health() {
   local deadline=$((SECONDS + 30))
   while (( SECONDS < deadline )); do
     local status
-    status="$(curl -sS -o /dev/null -w '%{http_code}' "${BASE_URL}/healthz" || true)"
+    status="$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/healthz" 2>/dev/null || true)"
     if [[ "$status" == "200" ]]; then
       return 0
     fi
