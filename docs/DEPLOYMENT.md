@@ -64,6 +64,27 @@ The script validates:
 - `/v1/meta` either returns metadata (`200`) or is treated as disabled/non-fatal
 - `/web` becomes accessible (`200`) when `DOCOPS_ENABLE_WEB_CONSOLE=1`
 
+## Frontend (M11-0) Dev
+
+The standalone frontend lives in `apps/web`.
+
+Backend (local or docker) must be running first, then start frontend dev server:
+
+```bash
+cd apps/web
+npm install
+npm run dev
+```
+
+Vite proxies `/v1`, `/healthz`, and `/health` to `DOCOPS_API_URL` (default `http://127.0.0.1:8000`), so local dev works without CORS by default.
+
+Production recommendation:
+
+- Prefer same-origin reverse proxy: serve frontend at `/` and backend at `/v1` under one domain.
+- Use split origins only when necessary, then configure both:
+  - API CORS (`DOCOPS_ENABLE_CORS=1`, `DOCOPS_CORS_ALLOW_ORIGINS=...`)
+  - Web connect-src allowlist (`DOCOPS_WEB_CONNECT_SRC=...`)
+
 ## Concurrency Model
 
 - `DOCOPS_MAX_CONCURRENCY` is a per-process token limit.

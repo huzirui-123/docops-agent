@@ -19,6 +19,10 @@ Docker 快速运行：
 容器端到端验收可运行：`bash scripts/docker_smoke_test.sh`
 验收项说明见：`docs/DEPLOYMENT.md` 的 `Docker Smoke Test` 章节。
 
+前端工程（M11-0）位于 `apps/web`：
+`cd apps/web && npm install && npm run dev`
+完整前后端联调与生产反代建议见：`docs/DEPLOYMENT.md` 的 `Frontend (M11-0) Dev` 章节。
+
 ## CLI
 运行单次生成：
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out`
