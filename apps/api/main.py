@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, cast, get_args, get_origin
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
 from starlette.background import BackgroundTask
@@ -46,6 +47,7 @@ _DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 _DEFAULT_TIMEOUT_SECONDS = 60.0
 _DEFAULT_MAX_CONCURRENCY = 2
 _DEFAULT_QUEUE_TIMEOUT_SECONDS = 0.0
+_DEFAULT_CORS_MAX_AGE_SECONDS = 600
 _BASIC_AUTH_REALM = "docops"
 
 _PRESET_TO_FORMAT: dict[PresetMode, tuple[FormatMode, FormatBaseline, FormatFixMode]] = {
@@ -53,6 +55,44 @@ _PRESET_TO_FORMAT: dict[PresetMode, tuple[FormatMode, FormatBaseline, FormatFixM
     "template": ("report", "template", "none"),
     "strict": ("strict", "policy", "safe"),
 }
+
+
+def _env_bool(name: str, default: str) -> bool:
+    raw = os.getenv(name, default).strip().lower()
+    return raw in {"1", "true", "on", "yes"}
+
+
+def _cors_allow_origins() -> list[str]:
+    raw = os.getenv("DOCOPS_CORS_ALLOW_ORIGINS")
+    if raw is None:
+        return ["*"]
+    origins = [value.strip() for value in raw.split(",") if value.strip()]
+    return origins or ["*"]
+
+
+def _cors_max_age_seconds() -> int:
+    raw = os.getenv("DOCOPS_CORS_MAX_AGE", str(_DEFAULT_CORS_MAX_AGE_SECONDS)).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_CORS_MAX_AGE_SECONDS
+    if value < 0:
+        return _DEFAULT_CORS_MAX_AGE_SECONDS
+    return value
+
+
+def _configure_optional_cors(target_app: FastAPI) -> None:
+    if not _env_bool("DOCOPS_ENABLE_CORS", "0"):
+        return
+    target_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_allow_origins(),
+        allow_methods=["*"],
+        allow_headers=["*"],
+        allow_credentials=_env_bool("DOCOPS_CORS_ALLOW_CREDENTIALS", "0"),
+        expose_headers=["X-Docops-Request-Id"],
+        max_age=_cors_max_age_seconds(),
+    )
 
 
 @dataclass(frozen=True)
@@ -124,6 +164,8 @@ class PipelineTimeoutError(TimeoutError):
 
 _limiter_lock = threading.Lock()
 _limiter_cache: _ConcurrencyLimiter | None = None
+
+_configure_optional_cors(app)
 
 
 @app.middleware("http")
