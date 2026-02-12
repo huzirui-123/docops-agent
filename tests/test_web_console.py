@@ -31,6 +31,8 @@ async def test_web_console_returns_html_and_request_id_header_when_enabled(
     assert "DocOps Web Console" in body
     assert "/v1/meta" in body
     assert "/v1/run" in body
-    assert "template" in body
-    assert "task" in body
-    assert "strict" in body
+    assert "API Base URL" in body
+    assert "Load Meta" in body
+    assert "Run" in body
+    assert "Request ID" in body
+    assert "Download ZIP" in body

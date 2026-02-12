@@ -87,6 +87,23 @@ export DOCOPS_CORS_ALLOW_ORIGINS="http://localhost:5173,http://127.0.0.1:5173"
 - In production, keep origins strict and apply auth at reverse proxy.
 - CORS settings do **not** change `/v1/run` business semantics or error body structure.
 
+## Web Console (debug/demo only)
+
+- `/web` remains gated by `DOCOPS_ENABLE_WEB_CONSOLE` (default: `0`).
+- Enable locally:
+
+```bash
+export DOCOPS_ENABLE_WEB_CONSOLE=1
+```
+
+- UI usability features include:
+  - Meta bootstrap (`Load Meta`)
+  - Optional `API Base URL` for split frontend debugging
+  - Request ID copy, duration display, readable error rendering
+  - ZIP download on success
+- For cross-origin browser calls, configure Optional CORS above.
+- This UI layer does **not** change `/v1/run` status codes, error body schema, or artifact rules.
+
 ## Structured Logging
 
 - API logs are single-line JSON via logger `docops.api`.
