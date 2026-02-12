@@ -184,6 +184,21 @@ export DOCOPS_CORS_ALLOW_ORIGINS="http://localhost:5173,http://127.0.0.1:5173"
 - In production, keep origins strict and apply auth at reverse proxy.
 - CORS settings do **not** change `/v1/run` business semantics or error body structure.
 
+## Precheck Before Run
+
+Use `/v1/precheck` to validate template/task/skill compatibility before running the full pipeline.
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/v1/precheck \
+  -F "template=@./template.docx;type=application/vnd.openxmlformats-officedocument.wordprocessingml.document" \
+  -F "task=@./task.json;type=application/json" \
+  -F "skill=meeting_notice"
+```
+
+- Response is JSON only (no zip artifacts).
+- It returns `expected_exit_code` (`0|2|3`) and missing/unsupported summaries.
+- This precheck endpoint does **not** change `/v1/run` semantics.
+
 ## Web Console (debug/demo only)
 
 - `/web` remains gated by `DOCOPS_ENABLE_WEB_CONSOLE` (default: `0`).
@@ -195,6 +210,7 @@ export DOCOPS_ENABLE_WEB_CONSOLE=1
 
 - UI usability features include:
   - Meta bootstrap (`Load Meta`)
+  - `Precheck` button (run `/v1/precheck` before `/v1/run`)
   - Optional `API Base URL` for split frontend debugging
   - Request ID copy, duration display, readable error rendering
   - ZIP download on success

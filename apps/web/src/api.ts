@@ -9,6 +9,13 @@ export type RunRequest = {
   policyYaml: string;
 };
 
+export type PrecheckRequest = {
+  baseUrl: string;
+  templateFile: File;
+  taskJson: string;
+  skill: string;
+};
+
 export type ApiResult = {
   status: number;
   requestId: string;
@@ -88,6 +95,38 @@ export async function runDocOps(request: RunRequest): Promise<ApiResult> {
       blob: await response.blob(),
     };
   }
+
+  let payload: unknown | null = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  return {
+    status: response.status,
+    requestId,
+    exitCode,
+    contentType,
+    payload,
+    blob: null,
+  };
+}
+
+export async function precheckDocOps(request: PrecheckRequest): Promise<ApiResult> {
+  const formData = new FormData();
+  formData.append("template", request.templateFile, request.templateFile.name || "template.docx");
+  formData.append("task", new Blob([request.taskJson], { type: "application/json" }), "task.json");
+  formData.append("skill", request.skill);
+
+  const response = await fetch(buildUrl(request.baseUrl, "/v1/precheck"), {
+    method: "POST",
+    body: formData,
+  });
+
+  const contentType = response.headers.get("content-type") ?? "";
+  const requestId = response.headers.get("X-Docops-Request-Id") ?? "";
+  const exitCode = response.headers.get("X-Docops-Exit-Code") ?? "";
 
   let payload: unknown | null = null;
   try {

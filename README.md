@@ -120,6 +120,14 @@ human 摘要在 run 结束（四件套写盘后）统一打印一次。
 元数据（前端自举）：
 `curl -s http://127.0.0.1:8000/v1/meta`
 
+预检（先验收再执行，不产 zip）：
+```bash
+curl -sS -X POST "http://127.0.0.1:8000/v1/precheck" \
+  -F "template=@./template.docx;type=application/vnd.openxmlformats-officedocument.wordprocessingml.document" \
+  -F "task=@./task.json;type=application/json" \
+  -F "skill=meeting_notice"
+```
+
 内置 Web 控制台（默认关闭，需显式开启）：
 `http://127.0.0.1:8000/web`
 
@@ -147,6 +155,8 @@ API 返回说明：
 `200` 返回 zip，响应头 `X-Docops-Exit-Code` 表示执行结果（`0/2/3/4`）。
 所有响应都包含 `X-Docops-Request-Id`（可用于排障关联）。
 `/v1/meta` 返回 `supported_skills`、`supported_task_types`、`supported_presets`、`task_payload_schemas`，前端应以该接口为准，不应硬编码。
+`/v1/meta` 额外返回 `supports_precheck`，用于前端能力探测。
+`/v1/precheck` 返回 JSON 诊断（`expected_exit_code=0/2/3`），不写文件、不返回 zip。
 `strict` 格式失败时仍返回 zip（`X-Docops-Exit-Code: 4`）。
 `skill` 参数当前支持：`meeting_notice`、`training_notice`、`inspection_record`。
 传入不支持 skill 会返回 `400`，并在 `detail.supported_skills` 给出可用列表。
@@ -170,7 +180,7 @@ zip 使用流式响应返回，避免一次性读入内存。
 所有响应（包括 404/405）都包含 `X-Docops-Request-Id`。
 
 Web 控制台是内置调试/演示界面，不含鉴权。线上暴露前请通过反向代理增加鉴权与访问控制。
-页面支持：`Load Meta`、`API Base URL`（空值同源）、`request_id` 复制、错误 JSON 可读展示、ZIP 下载、`Copy curl`、`task.json` 导入导出、最近请求历史。
+页面支持：`Load Meta`、`API Base URL`（空值同源）、`Precheck`、`request_id` 复制、错误 JSON 可读展示、ZIP 下载、`Copy curl`、`task.json` 导入导出、最近请求历史。
 若前后端分离访问，请先按 `docs/DEPLOYMENT.md` 的 Optional CORS 章节开启跨域。
 Web 控制台加固与可复现能力（`/web` 与 `/web/static/*` 同 gate/BasicAuth、CSP、安全头、跨域双条件）见 `docs/DEPLOYMENT.md` 的 `Web Console` 与 `Web Console Hardening` 章节。
 

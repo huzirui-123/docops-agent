@@ -5,6 +5,7 @@ import {
   defaultApiBaseUrl,
   loadMeta,
   normalizeApiBaseUrl,
+  precheckDocOps,
   runDocOps,
   type ApiResult,
 } from "./api";
@@ -102,6 +103,46 @@ function labelErrorPayload(payload: unknown): string[] {
   }
   if (lines.length === 0) {
     lines.push("error: response JSON has no known fields");
+  }
+  return lines;
+}
+
+function labelPrecheckPayload(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object") {
+    return ["precheck: non-JSON payload"];
+  }
+  const dict = payload as Record<string, unknown>;
+  const summary =
+    dict.summary && typeof dict.summary === "object"
+      ? (dict.summary as Record<string, unknown>)
+      : undefined;
+
+  const lines: string[] = [];
+  if ("expected_exit_code" in dict) {
+    lines.push(`expected_exit_code: ${JSON.stringify(dict.expected_exit_code)}`);
+  }
+  if ("ok" in dict) {
+    lines.push(`ok: ${JSON.stringify(dict.ok)}`);
+  }
+  if (summary) {
+    if ("unsupported_count" in summary) {
+      lines.push(`unsupported_count: ${JSON.stringify(summary.unsupported_count)}`);
+    }
+    if ("missing_required_count" in summary) {
+      lines.push(`missing_required_count: ${JSON.stringify(summary.missing_required_count)}`);
+    }
+    if ("missing_optional_count" in summary) {
+      lines.push(`missing_optional_count: ${JSON.stringify(summary.missing_optional_count)}`);
+    }
+  }
+  if (Array.isArray(dict.missing_required)) {
+    lines.push(`missing_required: ${JSON.stringify(dict.missing_required)}`);
+  }
+  if (Array.isArray(dict.missing_optional)) {
+    lines.push(`missing_optional: ${JSON.stringify(dict.missing_optional)}`);
+  }
+  if (lines.length === 0) {
+    lines.push("precheck: payload has no known fields");
   }
   return lines;
 }
@@ -455,6 +496,95 @@ export default function App() {
     }
   };
 
+  const precheckClick = async () => {
+    resetResult();
+
+    const templateFile = (document.getElementById("template-file") as HTMLInputElement).files?.[0];
+    if (!templateFile) {
+      setRunState("Please choose a template .docx file");
+      return;
+    }
+
+    const parsedTask = safeParseTask(settings.taskJson);
+    if (!parsedTask.ok) {
+      setRunState(parsedTask.message);
+      return;
+    }
+
+    const taskType = typeof parsedTask.value.task_type === "string" ? parsedTask.value.task_type : "";
+    if (!taskType) {
+      setRunState("task_type in task JSON is required");
+      return;
+    }
+    if (settings.skill.trim() !== taskType) {
+      setRunState(`skill (${settings.skill}) must match task_type (${taskType})`);
+      return;
+    }
+    if (taskTypeSelect && taskTypeSelect !== taskType) {
+      setRunState(`Selected task type (${taskTypeSelect}) must match task JSON (${taskType})`);
+      return;
+    }
+
+    setRunState("Precheck running ...");
+    const started = performance.now();
+
+    try {
+      const apiResult: ApiResult = await precheckDocOps({
+        baseUrl: settings.apiBaseUrl,
+        templateFile,
+        taskJson: settings.taskJson,
+        skill: settings.skill,
+      });
+      const durationMs = Math.round(performance.now() - started);
+      const payload = apiResult.payload as Record<string, unknown> | null;
+      const expectedExitCode =
+        payload && "expected_exit_code" in payload ? String(payload.expected_exit_code) : "-";
+
+      setResult({
+        status: String(apiResult.status),
+        requestId: apiResult.requestId,
+        durationMs,
+        exitCode: expectedExitCode,
+        downloadUrl: "",
+        errorLines:
+          apiResult.status === 200 ? labelPrecheckPayload(apiResult.payload) : labelErrorPayload(apiResult.payload),
+        errorJson: apiResult.payload ? JSON.stringify(apiResult.payload, null, 2) : "(empty response body)",
+      });
+
+      setRunState(apiResult.status === 200 ? "Precheck completed" : "Precheck failed");
+      appendHistory({
+        timestamp: new Date().toISOString(),
+        httpStatus: apiResult.status,
+        requestId: apiResult.requestId,
+        durationMs,
+        baseUrl: settings.apiBaseUrl,
+      });
+    } catch (error) {
+      const durationMs = Math.round(performance.now() - started);
+      setResult({
+        status: "network",
+        requestId: "",
+        durationMs,
+        exitCode: "-",
+        downloadUrl: "",
+        errorLines: [
+          `network_error: ${String(error)}`,
+          "Prefer same-origin/proxy in dev.",
+          "For split deployment, configure both DOCOPS_WEB_CONNECT_SRC and CORS (DOCOPS_ENABLE_CORS=1 + DOCOPS_CORS_ALLOW_ORIGINS).",
+        ],
+        errorJson: "",
+      });
+      setRunState("Precheck request failed before receiving response");
+      appendHistory({
+        timestamp: new Date().toISOString(),
+        httpStatus: "network",
+        requestId: "",
+        durationMs,
+        baseUrl: settings.apiBaseUrl,
+      });
+    }
+  };
+
   return (
     <main className="min-h-screen bg-slate-100 py-8">
       <div className="mx-auto max-w-6xl px-4">
@@ -634,10 +764,13 @@ export default function App() {
         </section>
 
         <section className="mb-4 rounded-xl bg-white p-6 shadow-sm">
-          <h2 className="mb-2 text-lg font-semibold text-slate-900">C. Run</h2>
+          <h2 className="mb-2 text-lg font-semibold text-slate-900">C. Run / Precheck</h2>
           <div className="flex items-center gap-3">
             <button className="btn-primary" onClick={runClick} type="button">
               Run
+            </button>
+            <button className="btn" onClick={precheckClick} type="button">
+              Precheck
             </button>
             <span className="text-sm text-slate-600">{runState}</span>
           </div>
