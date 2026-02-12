@@ -72,9 +72,12 @@ Backend (local or docker) must be running first, then start frontend dev server:
 
 ```bash
 cd apps/web
-npm install
+npm ci
 npm run dev
 ```
+
+Node.js 20 LTS is recommended (`.nvmrc` is pinned to `20`).
+If dependency download fails due temporary network issues, retry `npm ci` first before changing lockfiles.
 
 Vite proxies `/v1`, `/healthz`, and `/health` to `DOCOPS_API_URL` (default `http://127.0.0.1:8000`), so local dev works without CORS by default.
 
