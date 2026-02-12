@@ -820,7 +820,7 @@ def _guard_meta_access(request: Request, request_id: str) -> JSONResponse | None
 
 
 def _web_console_enabled() -> bool:
-    raw = os.getenv("DOCOPS_ENABLE_WEB_CONSOLE", "1").strip().lower()
+    raw = os.getenv("DOCOPS_ENABLE_WEB_CONSOLE", "0").strip().lower()
     return raw not in {"0", "false", "off", "no"}
 
 
