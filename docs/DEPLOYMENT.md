@@ -101,6 +101,10 @@ export DOCOPS_ENABLE_WEB_CONSOLE=1
   - Optional `API Base URL` for split frontend debugging
   - Request ID copy, duration display, readable error rendering
   - ZIP download on success
+  - Reproduce snippet (`Copy curl`) for easy issue replay
+  - Task JSON import/export
+  - Local settings persistence (except template file input)
+  - Recent request history (last 10 runs)
 - For cross-origin browser calls, configure Optional CORS above.
 - This UI layer does **not** change `/v1/run` status codes, error body schema, or artifact rules.
 
@@ -123,6 +127,7 @@ export DOCOPS_ENABLE_WEB_CONSOLE=1
   - Optional CORS enabled for API responses:
     - `DOCOPS_ENABLE_CORS=1`
     - `DOCOPS_CORS_ALLOW_ORIGINS=...`
+- In short: cross-origin console access needs both `connect-src` allowlist and API CORS headers.
 - For production exposure, keep `/web` behind reverse-proxy authentication for both routes:
   - `location /web`
   - `location /web/static/`

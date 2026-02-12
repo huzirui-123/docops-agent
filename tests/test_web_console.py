@@ -15,8 +15,14 @@ async def test_web_console_default_disabled_returns_not_found() -> None:
 
     assert response.status_code == 404
     assert response.headers["X-Docops-Request-Id"]
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+    assert "no-store" in response.headers["Cache-Control"]
     assert static_response.status_code == 404
     assert static_response.headers["X-Docops-Request-Id"]
+    assert static_response.headers["X-Content-Type-Options"] == "nosniff"
+    assert static_response.headers["Referrer-Policy"] == "no-referrer"
+    assert "no-store" in static_response.headers["Cache-Control"]
 
 
 @pytest.mark.anyio
@@ -49,6 +55,10 @@ async def test_web_console_returns_html_and_request_id_header_when_enabled(
     assert "Run" in body
     assert "Request ID" in body
     assert "Download ZIP" in body
+    assert "Reproduce (curl)" in body
+    assert "Copy curl" in body
+    assert "Import task.json" in body
+    assert "Export task.json" in body
     assert "/web/static/web_console.js" in body
     assert "/web/static/web_console.css" in body
 
@@ -67,3 +77,6 @@ async def test_web_console_returns_html_and_request_id_header_when_enabled(
     assert css_response.status_code == 200
     assert css_response.headers["X-Docops-Request-Id"]
     assert css_response.headers["Content-Type"].startswith("text/css")
+    assert css_response.headers["X-Content-Type-Options"] == "nosniff"
+    assert css_response.headers["Referrer-Policy"] == "no-referrer"
+    assert "no-store" in css_response.headers["Cache-Control"]

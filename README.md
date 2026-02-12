@@ -157,9 +157,9 @@ zip 使用流式响应返回，避免一次性读入内存。
 所有响应（包括 404/405）都包含 `X-Docops-Request-Id`。
 
 Web 控制台是内置调试/演示界面，不含鉴权。线上暴露前请通过反向代理增加鉴权与访问控制。
-页面支持：`Load Meta`、`API Base URL`（空值同源）、`request_id` 复制、错误 JSON 可读展示、ZIP 下载。
+页面支持：`Load Meta`、`API Base URL`（空值同源）、`request_id` 复制、错误 JSON 可读展示、ZIP 下载、`Copy curl`、`task.json` 导入导出、最近请求历史。
 若前后端分离访问，请先按 `docs/DEPLOYMENT.md` 的 Optional CORS 章节开启跨域。
-Web 控制台加固（`/web` 与 `/web/static/*` 同 gate/BasicAuth、CSP 与安全头）见 `docs/DEPLOYMENT.md` 的 `Web Console Hardening` 章节。
+Web 控制台加固与可复现能力（`/web` 与 `/web/static/*` 同 gate/BasicAuth、CSP、安全头、跨域双条件）见 `docs/DEPLOYMENT.md` 的 `Web Console` 与 `Web Console Hardening` 章节。
 
 默认限制：
 上传大小 `25MB`（环境变量：`DOCOPS_MAX_UPLOAD_BYTES`）

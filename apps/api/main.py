@@ -237,14 +237,21 @@ async def web_console(request: Request) -> HTMLResponse | JSONResponse:
     request_id = _request_id_from_request(request)
     auth_error = _guard_web_console_access(request, request_id)
     if auth_error is not None:
-        return auth_error
+        return cast(JSONResponse, _apply_web_headers(auth_error, request_id))
 
     html_path = Path(__file__).resolve().parent / "static" / "web_console.html"
-    html = html_path.read_text(encoding="utf-8")
-    return HTMLResponse(
-        content=html,
-        headers=_web_console_response_headers(request_id),
-    )
+    try:
+        html = html_path.read_text(encoding="utf-8")
+    except OSError:
+        error_response = _error_response(
+            status_code=500,
+            error_code="WEB_STATIC_MISSING",
+            message="web console asset is unavailable",
+            request_id=request_id,
+            detail={"path": request.url.path, "asset": "web_console.html"},
+        )
+        return cast(JSONResponse, _apply_web_headers(error_response, request_id))
+    return cast(HTMLResponse, _apply_web_headers(HTMLResponse(content=html), request_id))
 
 
 @app.get("/web/static/web_console.js", response_model=None)
@@ -254,13 +261,26 @@ async def web_console_js(request: Request) -> Response | JSONResponse:
     request_id = _request_id_from_request(request)
     auth_error = _guard_web_console_access(request, request_id)
     if auth_error is not None:
-        return auth_error
+        return cast(JSONResponse, _apply_web_headers(auth_error, request_id))
 
     js_path = Path(__file__).resolve().parent / "static" / "web_console.js"
-    return Response(
-        content=js_path.read_text(encoding="utf-8"),
-        media_type="application/javascript; charset=utf-8",
-        headers=_web_console_response_headers(request_id),
+    try:
+        js_content = js_path.read_text(encoding="utf-8")
+    except OSError:
+        error_response = _error_response(
+            status_code=500,
+            error_code="WEB_STATIC_MISSING",
+            message="web console asset is unavailable",
+            request_id=request_id,
+            detail={"path": request.url.path, "asset": "web_console.js"},
+        )
+        return cast(JSONResponse, _apply_web_headers(error_response, request_id))
+    return _apply_web_headers(
+        Response(
+            content=js_content,
+            media_type="application/javascript; charset=utf-8",
+        ),
+        request_id,
     )
 
 
@@ -271,13 +291,26 @@ async def web_console_css(request: Request) -> Response | JSONResponse:
     request_id = _request_id_from_request(request)
     auth_error = _guard_web_console_access(request, request_id)
     if auth_error is not None:
-        return auth_error
+        return cast(JSONResponse, _apply_web_headers(auth_error, request_id))
 
     css_path = Path(__file__).resolve().parent / "static" / "web_console.css"
-    return Response(
-        content=css_path.read_text(encoding="utf-8"),
-        media_type="text/css; charset=utf-8",
-        headers=_web_console_response_headers(request_id),
+    try:
+        css_content = css_path.read_text(encoding="utf-8")
+    except OSError:
+        error_response = _error_response(
+            status_code=500,
+            error_code="WEB_STATIC_MISSING",
+            message="web console asset is unavailable",
+            request_id=request_id,
+            detail={"path": request.url.path, "asset": "web_console.css"},
+        )
+        return cast(JSONResponse, _apply_web_headers(error_response, request_id))
+    return _apply_web_headers(
+        Response(
+            content=css_content,
+            media_type="text/css; charset=utf-8",
+        ),
+        request_id,
     )
 
 
@@ -906,10 +939,10 @@ def _meta_enabled() -> bool:
     return raw not in {"0", "false", "off", "no"}
 
 
-def _web_console_response_headers(request_id: str) -> dict[str, str]:
-    headers = _web_security_headers()
-    headers["X-Docops-Request-Id"] = request_id
-    return headers
+def _apply_web_headers(response: Response, request_id: str) -> Response:
+    response.headers.update(_web_security_headers())
+    response.headers.setdefault("X-Docops-Request-Id", request_id)
+    return response
 
 
 def _web_security_headers() -> dict[str, str]:
