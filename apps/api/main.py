@@ -21,10 +21,11 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast, get_args, get_origin
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 from starlette.background import BackgroundTask
 
@@ -242,7 +243,41 @@ async def web_console(request: Request) -> HTMLResponse | JSONResponse:
     html = html_path.read_text(encoding="utf-8")
     return HTMLResponse(
         content=html,
-        headers={"X-Docops-Request-Id": request_id},
+        headers=_web_console_response_headers(request_id),
+    )
+
+
+@app.get("/web/static/web_console.js", response_model=None)
+async def web_console_js(request: Request) -> Response | JSONResponse:
+    """Serve web console JavaScript with web-only security headers."""
+
+    request_id = _request_id_from_request(request)
+    auth_error = _guard_web_console_access(request, request_id)
+    if auth_error is not None:
+        return auth_error
+
+    js_path = Path(__file__).resolve().parent / "static" / "web_console.js"
+    return Response(
+        content=js_path.read_text(encoding="utf-8"),
+        media_type="application/javascript; charset=utf-8",
+        headers=_web_console_response_headers(request_id),
+    )
+
+
+@app.get("/web/static/web_console.css", response_model=None)
+async def web_console_css(request: Request) -> Response | JSONResponse:
+    """Serve web console stylesheet with web-only security headers."""
+
+    request_id = _request_id_from_request(request)
+    auth_error = _guard_web_console_access(request, request_id)
+    if auth_error is not None:
+        return auth_error
+
+    css_path = Path(__file__).resolve().parent / "static" / "web_console.css"
+    return Response(
+        content=css_path.read_text(encoding="utf-8"),
+        media_type="text/css; charset=utf-8",
+        headers=_web_console_response_headers(request_id),
     )
 
 
@@ -869,6 +904,66 @@ def _web_console_enabled() -> bool:
 def _meta_enabled() -> bool:
     raw = os.getenv("DOCOPS_ENABLE_META", "1").strip().lower()
     return raw not in {"0", "false", "off", "no"}
+
+
+def _web_console_response_headers(request_id: str) -> dict[str, str]:
+    headers = _web_security_headers()
+    headers["X-Docops-Request-Id"] = request_id
+    return headers
+
+
+def _web_security_headers() -> dict[str, str]:
+    return {
+        "Cache-Control": "no-store, max-age=0",
+        "Pragma": "no-cache",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "X-Frame-Options": "DENY",
+        "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+        "X-Robots-Tag": "noindex, nofollow",
+        "Content-Security-Policy": _web_content_security_policy(),
+    }
+
+
+def _web_content_security_policy() -> str:
+    directives: list[tuple[str, list[str]]] = [
+        ("default-src", ["'self'"]),
+        ("script-src", ["'self'"]),
+        ("style-src", ["'self'"]),
+        ("img-src", ["'self'", "data:"]),
+        ("connect-src", ["'self'", *_web_connect_src_origins()]),
+        ("base-uri", ["'none'"]),
+        ("form-action", ["'self'"]),
+        ("frame-ancestors", ["'none'"]),
+    ]
+
+    rendered: list[str] = []
+    for name, values in directives:
+        unique_values: list[str] = []
+        for value in values:
+            if value not in unique_values:
+                unique_values.append(value)
+        rendered.append(f"{name} {' '.join(unique_values)}")
+    return "; ".join(rendered)
+
+
+def _web_connect_src_origins() -> list[str]:
+    raw = os.getenv("DOCOPS_WEB_CONNECT_SRC", "")
+    if not raw.strip():
+        return []
+
+    origins: list[str] = []
+    for candidate in raw.split(","):
+        value = candidate.strip()
+        if not value:
+            continue
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        normalized = f"{parsed.scheme}://{parsed.netloc}"
+        if normalized not in origins:
+            origins.append(normalized)
+    return origins
 
 
 def _basic_auth_error_response_if_needed(request: Request, request_id: str) -> JSONResponse | None:
