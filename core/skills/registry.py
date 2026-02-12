@@ -8,6 +8,7 @@ from core.skills.base import Skill
 from core.skills.inspection_record import InspectionRecordSkill
 from core.skills.meeting_notice import MeetingNoticeSkill
 from core.skills.models import supported_task_types
+from core.skills.specs import SKILL_SPECS
 from core.skills.training_notice import TrainingNoticeSkill
 
 SkillFactory = Callable[[], Skill]
@@ -36,14 +37,16 @@ def list_supported_skills() -> list[str]:
 
 
 def _assert_registry_alignment() -> None:
-    """Fail fast when task model support diverges from skill registry keys."""
+    """Fail fast when model/spec support diverges from skill registry keys."""
 
     skill_names = set(_SUPPORTED_SKILLS)
     task_types = set(supported_task_types())
-    if skill_names != task_types:
+    spec_names = set(SKILL_SPECS)
+    if skill_names != task_types or skill_names != spec_names:
         raise RuntimeError(
-            "Skill registry keys must match task type schemas: "
-            f"skills={sorted(skill_names)}, task_types={sorted(task_types)}"
+            "Skill registry/spec keys must match task type schemas: "
+            "skills="
+            f"{sorted(skill_names)}, task_types={sorted(task_types)}, specs={sorted(spec_names)}"
         )
 
 

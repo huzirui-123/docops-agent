@@ -19,3 +19,14 @@
 ## 可持续开发强制规则（必须）
 1. 任何对 docx XML 的操作必须封装在 core/utils/docx_xml.py。
 2. 替换触碰点必须记录（touched_runs 或 run_id 级标记）。后续 validator/fixer 只能基于触碰点对“被替换 run”做字体/字号等强制修改；不得全局乱改。
+
+## 新增 Skill Checklist
+新增一个 skill 时，按以下顺序补齐：
+
+1. 在 `core/skills/models.py` 定义该 `task_type` 的 payload schema。
+2. 在 `core/skills/specs.py` 增加 `SkillSpec`（`mapping` / `required_payload_keys` / `list_payload_keys`）。
+3. 在 `core/skills/registry.py` 注册 skill，并保持与 `TASK_PAYLOAD_SCHEMAS` key 对齐。
+4. 增加测试：
+   - `tests/test_skill_contracts.py`（契约一致性）
+   - skill 单测（映射与 required/optional）
+   - API 成功与缺必填（`exit_code=2`）回归。
