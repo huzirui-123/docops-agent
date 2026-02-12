@@ -2,8 +2,10 @@
 set -euo pipefail
 
 IMAGE_TAG="docops-agent:local"
+BASE_IMAGE="python:3.11-slim"
 CONTAINER_NAME="docops_agent_smoke"
-BASE_URL="http://127.0.0.1:8000"
+BASE_URL=""
+HOST_PORT=""
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"; docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true' EXIT
@@ -61,26 +63,80 @@ print("")
 PY
 }
 
+ensure_docker_available() {
+  if ! docker version >/dev/null 2>&1; then
+    echo "[docker-smoke] Docker daemon unavailable (blocked): cannot run smoke test" >&2
+    exit 2
+  fi
+}
+
+ensure_base_image() {
+  if docker image inspect "${BASE_IMAGE}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local attempt=1
+  local max_attempts=3
+  local sleep_seconds=2
+
+  while (( attempt <= max_attempts )); do
+    echo "[docker-smoke] Pulling ${BASE_IMAGE} (attempt ${attempt}/${max_attempts})..."
+    if docker pull "${BASE_IMAGE}"; then
+      return 0
+    fi
+    if (( attempt == max_attempts )); then
+      echo "[docker-smoke] Failed to pull ${BASE_IMAGE} after ${max_attempts} attempts" >&2
+      return 1
+    fi
+    sleep "${sleep_seconds}"
+    sleep_seconds=$((sleep_seconds * 2))
+    attempt=$((attempt + 1))
+  done
+
+  return 1
+}
+
 wait_for_health() {
   local deadline=$((SECONDS + 30))
   while (( SECONDS < deadline )); do
     local status
     status="$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/healthz" 2>/dev/null || true)"
-    if [[ "$status" == "200" ]]; then
+    if [[ "${status}" == "200" ]]; then
       return 0
     fi
     sleep 1
   done
+
+  echo "[docker-smoke] Service did not become healthy within timeout at ${BASE_URL}" >&2
+  echo "[docker-smoke] Container logs:" >&2
+  docker logs "${CONTAINER_NAME}" >&2 || true
+  return 1
+}
+
+start_container_with_fallback_port() {
+  docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+
+  local start_port=8000
+  local end_port=8019
+  local port
+
+  for ((port=start_port; port<=end_port; port++)); do
+    echo "[docker-smoke] Trying port ${port}..."
+    if docker run -d --rm -p "${port}:8000" --name "${CONTAINER_NAME}" "$@" "${IMAGE_TAG}" >/dev/null 2>&1; then
+      HOST_PORT="${port}"
+      BASE_URL="http://127.0.0.1:${HOST_PORT}"
+      return 0
+    fi
+  done
+
+  echo "[docker-smoke] Failed to start container on ports ${start_port}-${end_port}" >&2
+  docker logs "${CONTAINER_NAME}" >&2 || true
   return 1
 }
 
 run_container() {
-  docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-  docker run -d --rm -p 8000:8000 --name "${CONTAINER_NAME}" "$@" "${IMAGE_TAG}" >/dev/null
-  if ! wait_for_health; then
-    echo "Service did not become healthy within timeout" >&2
-    return 1
-  fi
+  start_container_with_fallback_port "$@"
+  wait_for_health
 }
 
 request_to_files() {
@@ -90,11 +146,16 @@ request_to_files() {
   curl -sS -o "$body_file" -D "$headers_file" -w '%{http_code}' "$url"
 }
 
+ensure_docker_available
+ensure_base_image
+
 echo "[docker-smoke] Building image ${IMAGE_TAG}..."
 docker build -t "${IMAGE_TAG}" .
 
 echo "[docker-smoke] Starting container with default env..."
 run_container
+
+echo "[docker-smoke] Using BASE_URL=${BASE_URL}"
 
 healthz_body="${TMP_DIR}/healthz.json"
 healthz_headers="${TMP_DIR}/healthz.headers"
@@ -126,6 +187,8 @@ fi
 
 echo "[docker-smoke] Restarting container with DOCOPS_ENABLE_WEB_CONSOLE=1..."
 run_container -e DOCOPS_ENABLE_WEB_CONSOLE=1
+
+echo "[docker-smoke] Using BASE_URL=${BASE_URL}"
 
 web_enabled_body="${TMP_DIR}/web_enabled.html"
 web_enabled_headers="${TMP_DIR}/web_enabled.headers"
