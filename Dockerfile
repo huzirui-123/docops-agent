@@ -17,11 +17,10 @@ ENV PATH="${POETRY_HOME}/bin:${PATH}"
 WORKDIR /app
 
 COPY pyproject.toml poetry.lock ./
-RUN poetry install --only main --no-root \
-    && poetry run python -m pip install --no-cache-dir uvicorn
+RUN poetry install --only main --no-root
 
 COPY . .
 
 EXPOSE 8000
 
-CMD ["poetry", "run", "python", "-m", "uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["poetry", "run", "uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
