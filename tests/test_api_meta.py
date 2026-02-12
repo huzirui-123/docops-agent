@@ -18,6 +18,7 @@ async def test_meta_returns_supported_capabilities_and_request_id() -> None:
 
     payload = response.json()
     assert payload["version"]
+    assert payload["supports_precheck"] is True
     assert {"meeting_notice", "training_notice", "inspection_record"}.issubset(
         set(payload["supported_skills"])
     )

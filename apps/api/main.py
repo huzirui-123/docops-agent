@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, cast, get_args, get_origin
 from urllib.parse import urlparse
 
+from docx import Document
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -32,8 +33,9 @@ from starlette.background import BackgroundTask
 from apps.api.runner_process import RunnerRequest, RunnerResponse, run_pipeline_worker
 from apps.cli.io import build_output_paths
 from core.format.policy_loader import load_policy
-from core.skills.models import TASK_PAYLOAD_SCHEMAS, TaskSpec, supported_task_types
+from core.skills.models import TASK_PAYLOAD_SCHEMAS, SkillResult, TaskSpec, supported_task_types
 from core.skills.registry import create_skill, list_supported_skills
+from core.templates.placeholder_parser import parse_placeholders
 
 app = FastAPI(title="docops-agent API", version="0.1.0")
 logger = logging.getLogger("docops.api")
@@ -228,6 +230,7 @@ async def meta_v1(request: Request) -> JSONResponse:
         "supported_task_types": supported_task_types(),
         "supported_presets": list(_PRESET_TO_FORMAT),
         "task_payload_schemas": _task_payload_summaries(),
+        "supports_precheck": True,
         "version": app.version,
     }
     return JSONResponse(
@@ -235,6 +238,93 @@ async def meta_v1(request: Request) -> JSONResponse:
         headers={"X-Docops-Request-Id": request_id},
         content=payload,
     )
+
+
+@app.post("/v1/precheck", response_model=None)
+async def precheck_v1(
+    request: Request,
+    template: Annotated[UploadFile, File(...)],
+    task: Annotated[UploadFile, File(...)],
+    skill: Annotated[str, Form()] = "meeting_notice",
+) -> JSONResponse:
+    """Precheck template/task/skill compatibility without running full pipeline."""
+
+    request_id = _request_id_from_request(request)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="docops-api-precheck-"))
+    _register_cleanup_path(request, tmp_dir)
+    try:
+        max_upload_bytes = _max_upload_bytes()
+
+        _validate_upload_name(template.filename, expected_suffix=".docx", field_name="template")
+        _validate_upload_name(task.filename, expected_suffix=".json", field_name="task")
+
+        template_path = tmp_dir / "template.docx"
+        task_path = tmp_dir / "task.json"
+
+        template_magic = _save_upload_with_limit(
+            upload=template,
+            destination=template_path,
+            max_bytes=max_upload_bytes,
+            field_name="template",
+        )
+        if template_magic != b"PK\x03\x04":
+            raise ApiRequestError(
+                status_code=415,
+                error_code="INVALID_MEDIA_TYPE",
+                message="template must be a valid .docx file",
+                detail={"field": "template"},
+            )
+
+        _save_upload_with_limit(
+            upload=task,
+            destination=task_path,
+            max_bytes=max_upload_bytes,
+            field_name="task",
+        )
+
+        task_spec = _load_task_spec(task_path)
+        selected_skill_name = _resolve_skill(skill)
+        if selected_skill_name != task_spec.task_type:
+            raise ApiRequestError(
+                status_code=400,
+                error_code="INVALID_ARGUMENT_CONFLICT",
+                message="skill and task_type must match",
+                detail={
+                    "field": "skill",
+                    "skill": selected_skill_name,
+                    "task_type": task_spec.task_type,
+                },
+            )
+
+        result_payload = _run_precheck(
+            template_path=template_path,
+            task_spec=task_spec,
+            selected_skill_name=selected_skill_name,
+            request_id=request_id,
+        )
+        return JSONResponse(
+            status_code=200,
+            headers={"X-Docops-Request-Id": request_id},
+            content=result_payload,
+        )
+    except ApiRequestError as exc:
+        return _error_response(
+            status_code=exc.status_code,
+            error_code=exc.error_code,
+            message=exc.message,
+            request_id=request_id,
+            detail=exc.detail,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error_response(
+            status_code=500,
+            error_code="INTERNAL_ERROR",
+            message="internal server error",
+            request_id=request_id,
+            detail={"error": str(exc)},
+        )
+    finally:
+        _safe_remove_dir(tmp_dir)
 
 
 @app.get("/web", response_model=None)
@@ -1141,6 +1231,66 @@ def _resolve_skill(skill_name: str) -> str:
             },
         ) from exc
     return skill_name
+
+
+def _run_precheck(
+    *,
+    template_path: Path,
+    task_spec: TaskSpec,
+    selected_skill_name: str,
+    request_id: str,
+) -> dict[str, Any]:
+    try:
+        document = Document(str(template_path))
+    except Exception as exc:  # noqa: BLE001
+        raise ApiRequestError(
+            status_code=415,
+            error_code="INVALID_MEDIA_TYPE",
+            message="template must be a valid .docx file",
+            detail={"field": "template", "error": str(exc)},
+        ) from exc
+
+    parse_result = parse_placeholders(document, strict=False)
+    skill_result = create_skill(selected_skill_name).build_fields(task_spec)
+    missing_required, missing_optional = _compute_precheck_missing_fields(
+        template_fields=parse_result.fields,
+        skill_result=skill_result,
+    )
+
+    unsupported_count = len(parse_result.unsupported)
+    expected_exit_code = 3 if unsupported_count > 0 else 2 if missing_required else 0
+    return {
+        "ok": expected_exit_code == 0,
+        "expected_exit_code": expected_exit_code,
+        "request_id": request_id,
+        "summary": {
+            "template_field_count": len(parse_result.fields),
+            "unsupported_count": unsupported_count,
+            "missing_required_count": len(missing_required),
+            "missing_optional_count": len(missing_optional),
+        },
+        "template_fields": parse_result.fields,
+        "missing_required": missing_required,
+        "missing_optional": missing_optional,
+    }
+
+
+def _compute_precheck_missing_fields(
+    *,
+    template_fields: list[str],
+    skill_result: SkillResult,
+) -> tuple[list[str], list[str]]:
+    template_field_set = set(template_fields)
+    provided_fields = set(skill_result.field_values)
+    missing_in_template = template_field_set - provided_fields
+
+    required = set(skill_result.required_fields)
+    optional = set(skill_result.optional_fields)
+    missing_required = sorted(missing_in_template & required)
+    missing_optional = sorted(
+        (missing_in_template & optional) | (missing_in_template - (required | optional))
+    )
+    return missing_required, missing_optional
 
 
 def _load_policy_with_api_error(policy_path: Path | None):
