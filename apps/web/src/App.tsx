@@ -36,7 +36,10 @@ type ResultState = {
   errorJson: string;
 };
 
+type ApiHealthState = "checking" | "ok" | "down";
+
 const HISTORY_LIMIT = 10;
+
 const DEFAULT_TASK_JSON = JSON.stringify(
   {
     task_type: "meeting_notice",
@@ -68,6 +71,20 @@ const DEFAULT_RESULT: ResultState = {
   errorJson: "",
 };
 
+function safeParseTask(taskJson: string):
+  | { ok: true; value: Record<string, unknown> }
+  | { ok: false; message: string } {
+  try {
+    const parsed = JSON.parse(taskJson);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ok: false, message: "task JSON must be an object" };
+    }
+    return { ok: true, value: parsed as Record<string, unknown> };
+  } catch (error) {
+    return { ok: false, message: `task JSON parse error: ${String(error)}` };
+  }
+}
+
 function labelErrorPayload(payload: unknown): string[] {
   if (!payload || typeof payload !== "object") {
     return ["error: non-JSON error response"];
@@ -82,29 +99,11 @@ function labelErrorPayload(payload: unknown): string[] {
   }
   if ("detail" in dict) {
     lines.push(`detail: ${JSON.stringify(dict.detail)}`);
-    if (dict.detail && typeof dict.detail === "object") {
-      const detail = dict.detail as Record<string, unknown>;
-      if (typeof detail.request_id === "string") {
-        lines.push(`detail.request_id: ${detail.request_id}`);
-      }
-    }
   }
   if (lines.length === 0) {
     lines.push("error: response JSON has no known fields");
   }
   return lines;
-}
-
-function safeParseTask(taskJson: string): { ok: true; value: Record<string, unknown> } | { ok: false; message: string } {
-  try {
-    const parsed = JSON.parse(taskJson);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { ok: false, message: "task JSON must be an object" };
-    }
-    return { ok: true, value: parsed as Record<string, unknown> };
-  } catch (error) {
-    return { ok: false, message: `task JSON parse error: ${String(error)}` };
-  }
 }
 
 function buildReproduceCurl(settings: ConsoleSettings, baseUrl: string): string {
@@ -120,16 +119,16 @@ function buildReproduceCurl(settings: ConsoleSettings, baseUrl: string): string 
     "JSON",
     "",
     policyHint,
-    `curl -sS -X POST \"${baseUrl}/v1/run\" \\\`,
-    "  -F \"template=@/path/to/template.docx;type=application/vnd.openxmlformats-officedocument.wordprocessingml.document\" \\\",
-    "  -F \"task=@/tmp/task.json;type=application/json\" \\\",
-    `  -F \"skill=${settings.skill}\" \\\",
-    `  -F \"preset=${settings.preset}\" \\\",
-    `  -F \"strict=${settings.strict ? "true" : "false"}\" \\\",
-    `  -F \"export_suggested_policy=${settings.exportSuggestedPolicy ? "true" : "false"}\" \\\",
-    "  -D headers.txt \\\",
+    `curl -sS -X POST "${baseUrl}/v1/run" \\`,
+    '  -F "template=@/path/to/template.docx;type=application/vnd.openxmlformats-officedocument.wordprocessingml.document" \\',
+    '  -F "task=@/tmp/task.json;type=application/json" \\',
+    `  -F "skill=${settings.skill}" \\`,
+    `  -F "preset=${settings.preset}" \\`,
+    `  -F "strict=${settings.strict ? "true" : "false"}" \\`,
+    `  -F "export_suggested_policy=${settings.exportSuggestedPolicy ? "true" : "false"}" \\`,
+    "  -D headers.txt \\",
     "  -o docops_outputs.zip",
-    "grep -i \"X-Docops-Request-Id\" headers.txt",
+    'grep -i "X-Docops-Request-Id" headers.txt',
   ].join("\n");
 }
 
@@ -145,6 +144,8 @@ export default function App() {
     warning: "",
   });
   const [runState, setRunState] = useState<string>("Idle");
+  const [apiHealth, setApiHealth] = useState<ApiHealthState>("checking");
+  const [resultHighlight, setResultHighlight] = useState<boolean>(false);
   const [result, setResult] = useState<ResultState>(DEFAULT_RESULT);
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
   const persistTimer = useRef<number | null>(null);
@@ -185,6 +186,23 @@ export default function App() {
     };
   }, [result.downloadUrl]);
 
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const response = await fetch(apiUrl(settings.apiBaseUrl, "/healthz"), { method: "GET" });
+        setApiHealth(response.ok ? "ok" : "down");
+      } catch {
+        setApiHealth("down");
+      }
+    };
+    setApiHealth("checking");
+    void checkHealth();
+  }, [settings.apiBaseUrl]);
+
+  const updateSetting = <K extends keyof ConsoleSettings>(key: K, value: ConsoleSettings[K]) => {
+    setSettings((prev) => ({ ...prev, [key]: value }));
+  };
+
   const loadMetaClick = async () => {
     setMeta((prev) => ({ ...prev, status: "loading", message: "Loading /v1/meta ...", warning: "" }));
     try {
@@ -195,7 +213,7 @@ export default function App() {
           status: "error",
           message: `Meta unavailable (status=${response.status}, request_id=${response.requestId || "n/a"})`,
           warning:
-            "Manual skill input is available. For cross-origin calls, prefer same-origin/proxy first; if split deployment is required, configure both DOCOPS_WEB_CONNECT_SRC and CORS (DOCOPS_ENABLE_CORS=1 + DOCOPS_CORS_ALLOW_ORIGINS).",
+            "Manual skill input is available. For cross-origin calls, configure both DOCOPS_WEB_CONNECT_SRC and CORS (DOCOPS_ENABLE_CORS=1 + DOCOPS_CORS_ALLOW_ORIGINS).",
         }));
         return;
       }
@@ -236,10 +254,6 @@ export default function App() {
     }
   };
 
-  const updateSetting = <K extends keyof ConsoleSettings>(key: K, value: ConsoleSettings[K]) => {
-    setSettings((prev) => ({ ...prev, [key]: value }));
-  };
-
   const importTaskJson = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) {
@@ -272,6 +286,25 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  const formatTaskJson = () => {
+    const parsed = safeParseTask(settings.taskJson);
+    if (!parsed.ok) {
+      setRunState(`Format failed: ${parsed.message}`);
+      return;
+    }
+    updateSetting("taskJson", JSON.stringify(parsed.value, null, 2));
+    setRunState("Task JSON formatted");
+  };
+
+  const validateTaskJson = () => {
+    const parsed = safeParseTask(settings.taskJson);
+    if (!parsed.ok) {
+      setRunState(`Validate failed: ${parsed.message}`);
+      return;
+    }
+    setRunState("Task JSON is valid");
+  };
+
   const copyRequestId = async () => {
     if (!result.requestId) {
       return;
@@ -293,18 +326,26 @@ export default function App() {
     }
   };
 
+  const copyIssueBundle = async () => {
+    const lines = [
+      `status: ${result.status}`,
+      `request_id: ${result.requestId || "-"}`,
+      `exit_code: ${result.exitCode}`,
+      `duration_ms: ${result.durationMs ?? "-"}`,
+      "",
+      "reproduce:",
+      reproduceCurl,
+    ];
+    try {
+      await navigator.clipboard.writeText(lines.join("\n"));
+      setRunState("Issue bundle copied");
+    } catch (error) {
+      setRunState(`Copy failed: ${String(error)}`);
+    }
+  };
+
   const appendHistory = (entry: HistoryEntry) => {
-    setHistory((prev) => {
-      const deduped = prev.filter(
-        (item) =>
-          !(
-            item.timestamp === entry.timestamp &&
-            item.requestId === entry.requestId &&
-            item.httpStatus === entry.httpStatus
-          ),
-      );
-      return [entry, ...deduped].slice(0, HISTORY_LIMIT);
-    });
+    setHistory((prev) => [entry, ...prev].slice(0, HISTORY_LIMIT));
   };
 
   const resetResult = () => {
@@ -316,6 +357,7 @@ export default function App() {
 
   const runClick = async () => {
     resetResult();
+
     const templateFile = (document.getElementById("template-file") as HTMLInputElement).files?.[0];
     if (!templateFile) {
       setRunState("Please choose a template .docx file");
@@ -417,10 +459,29 @@ export default function App() {
     <main className="min-h-screen bg-slate-100 py-8">
       <div className="mx-auto max-w-6xl px-4">
         <header className="mb-6 rounded-xl bg-white p-6 shadow-sm">
-          <h1 className="text-2xl font-bold text-slate-900">DocOps Web Console</h1>
-          <p className="mt-2 text-sm text-slate-600">
-            Debug/demo UI for <code>/v1/run</code>. Use same-origin or proxy by default.
-          </p>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h1 className="text-2xl font-bold text-slate-900">DocOps Web Console</h1>
+              <p className="mt-2 text-sm text-slate-600">
+                Debug/demo UI for <code>/v1/run</code>. Use same-origin or proxy by default.
+              </p>
+            </div>
+            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Backend status</p>
+              <p
+                className={`mt-1 inline-flex items-center gap-2 text-sm font-semibold ${
+                  apiHealth === "ok" ? "text-emerald-700" : apiHealth === "down" ? "text-rose-700" : "text-amber-700"
+                }`}
+              >
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    apiHealth === "ok" ? "bg-emerald-500" : apiHealth === "down" ? "bg-rose-500" : "bg-amber-500"
+                  }`}
+                />
+                {apiHealth === "ok" ? "API OK" : apiHealth === "down" ? "API Down" : "Checking..."}
+              </p>
+            </div>
+          </div>
         </header>
 
         <section className="mb-4 rounded-xl bg-white p-6 shadow-sm">
@@ -553,6 +614,12 @@ export default function App() {
             <button type="button" className="btn" onClick={exportTaskJson}>
               Export task.json
             </button>
+            <button type="button" className="btn" onClick={formatTaskJson}>
+              Format JSON
+            </button>
+            <button type="button" className="btn" onClick={validateTaskJson}>
+              Validate
+            </button>
             <span className="text-xs text-slate-500">Template file is not persisted by browser storage.</span>
           </div>
 
@@ -576,7 +643,12 @@ export default function App() {
           </div>
         </section>
 
-        <section id="result-block" className="mb-4 rounded-xl bg-white p-6 shadow-sm">
+        <section
+          id="result-block"
+          className={`mb-4 rounded-xl bg-white p-6 shadow-sm transition ${
+            resultHighlight ? "ring-2 ring-indigo-400 ring-offset-2" : ""
+          }`}
+        >
           <h2 className="mb-2 text-lg font-semibold text-slate-900">D. Result</h2>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <div>
@@ -625,6 +697,9 @@ export default function App() {
               <button className="btn" onClick={copyCurl} type="button">
                 Copy curl
               </button>
+              <button className="btn" onClick={copyIssueBundle} type="button">
+                Copy as issue bundle
+              </button>
             </div>
             <pre className="pre mt-2">{reproduceCurl}</pre>
           </div>
@@ -643,6 +718,8 @@ export default function App() {
                     className="history-row"
                     onClick={() => {
                       setResult((prev) => ({ ...prev, requestId: entry.requestId }));
+                      setResultHighlight(true);
+                      window.setTimeout(() => setResultHighlight(false), 900);
                       document.getElementById("result-block")?.scrollIntoView({ behavior: "smooth" });
                     }}
                   >
