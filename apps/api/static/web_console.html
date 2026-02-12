@@ -78,6 +78,14 @@
           Task JSON
           <textarea id="task-json" required>{"task_type":"meeting_notice","payload":{"meeting_title":"Weekly meeting"}}</textarea>
         </label>
+        <div class="inline">
+          <label class="file-label">
+            Import task.json
+            <input id="import-task-file" type="file" accept=".json,application/json" />
+          </label>
+          <button id="export-task-btn" type="button">Export task.json</button>
+          <span class="hint">Template file will not be remembered by browser storage.</span>
+        </div>
 
         <label>
           policy_yaml (optional text)
@@ -117,6 +125,19 @@
         <pre id="error-lines"></pre>
         <pre id="error-json"></pre>
       </div>
+
+      <div id="reproduce-area">
+        <h3>Reproduce (curl)</h3>
+        <div class="inline">
+          <button id="copy-curl-btn" type="button">Copy curl</button>
+        </div>
+        <pre id="reproduce-curl"></pre>
+      </div>
+    </section>
+
+    <section>
+      <h2>E. Recent History</h2>
+      <ul id="history-list" class="history-list"></ul>
     </section>
 
     <script src="/web/static/web_console.js"></script>

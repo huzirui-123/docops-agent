@@ -2,6 +2,10 @@
 
 // DocOps Web Console JS
 (() => {
+  const STORAGE_KEY_SETTINGS = "docops.web.console.settings.v1";
+  const STORAGE_KEY_HISTORY = "docops.web.console.history.v1";
+  const HISTORY_LIMIT = 10;
+
   const apiBaseEl = document.getElementById("api-base-url");
   const loadMetaBtn = document.getElementById("load-meta-btn");
   const metaLinkEl = document.getElementById("meta-link");
@@ -17,6 +21,8 @@
   const taskJsonEl = document.getElementById("task-json");
   const policyYamlEl = document.getElementById("policy-yaml");
   const exportSuggestedEl = document.getElementById("export-suggested-policy");
+  const importTaskFileEl = document.getElementById("import-task-file");
+  const exportTaskBtn = document.getElementById("export-task-btn");
 
   const runBtn = document.getElementById("run-btn");
   const runStateEl = document.getElementById("run-state");
@@ -31,8 +37,13 @@
   const downloadLinkEl = document.getElementById("download-link");
   const errorLinesEl = document.getElementById("error-lines");
   const errorJsonEl = document.getElementById("error-json");
+  const copyCurlBtn = document.getElementById("copy-curl-btn");
+  const reproduceCurlEl = document.getElementById("reproduce-curl");
+  const historyListEl = document.getElementById("history-list");
 
   let downloadUrl = null;
+  let persistTimer = null;
+  let requestHistory = [];
 
   function normalizeBaseUrl(value) {
     const trimmed = value.trim();
@@ -40,6 +51,10 @@
       return "";
     }
     return trimmed.replace(/\/+$/, "");
+  }
+
+  function effectiveBaseUrl() {
+    return normalizeBaseUrl(apiBaseEl.value) || window.location.origin;
   }
 
   function apiUrl(path) {
@@ -82,7 +97,7 @@
 
   function fillSelect(selectEl, values, fallbackValue) {
     const unique = Array.from(
-      new Set((values || []).filter((v) => typeof v === "string" && v.trim() !== "")),
+      new Set((values || []).filter((value) => typeof value === "string" && value.trim() !== "")),
     );
     selectEl.innerHTML = "";
     if (unique.length === 0) {
@@ -147,6 +162,7 @@
     if (!payload || typeof payload !== "object") {
       return ["error: non-JSON error response"];
     }
+
     const lines = [];
     const keys = ["error", "error_code", "code", "message", "exit_code", "failures"];
     for (const key of keys) {
@@ -154,6 +170,7 @@
         lines.push(`${key}: ${JSON.stringify(payload[key])}`);
       }
     }
+
     if (Object.prototype.hasOwnProperty.call(payload, "detail")) {
       const detail = payload.detail;
       lines.push(`detail: ${JSON.stringify(detail)}`);
@@ -161,10 +178,184 @@
         lines.push(`detail.request_id: ${detail.request_id}`);
       }
     }
+
     if (lines.length === 0) {
       lines.push("error: response JSON does not include expected fields");
     }
+
     return lines;
+  }
+
+  function buildReproduceCurl() {
+    const baseUrl = effectiveBaseUrl();
+    const skill = selectedSkill() || "meeting_notice";
+    const preset = presetSelectEl.value || "quick";
+    const strict = strictEl.checked ? "true" : "false";
+    const exportSuggested = exportSuggestedEl.checked ? "true" : "false";
+    const policyHint =
+      policyYamlEl.value.trim() !== ""
+        ? "# Note: policy_yaml is set in UI. Add a matching -F policy_yaml='...' if needed.\n"
+        : "";
+
+    const taskBody = taskJsonEl.value.trim() || "{}";
+
+    return [
+      "# Save task payload",
+      "cat > /tmp/task.json <<'JSON'",
+      taskBody,
+      "JSON",
+      "",
+      policyHint.trimEnd(),
+      "curl -sS -X POST \"" + baseUrl + "/v1/run\" \\",
+      "  -F \"template=@/path/to/template.docx;type=application/vnd.openxmlformats-officedocument.wordprocessingml.document\" \\",
+      "  -F \"task=@/tmp/task.json;type=application/json\" \\",
+      "  -F \"skill=" + skill + "\" \\",
+      "  -F \"preset=" + preset + "\" \\",
+      "  -F \"strict=" + strict + "\" \\",
+      "  -F \"export_suggested_policy=" + exportSuggested + "\" \\",
+      "  -D headers.txt \\",
+      "  -o docops_outputs.zip",
+      "grep -i \"X-Docops-Request-Id\" headers.txt",
+    ]
+      .filter((line) => line !== "")
+      .join("\n");
+  }
+
+  function renderReproduceCurl() {
+    reproduceCurlEl.textContent = buildReproduceCurl();
+  }
+
+  function schedulePersist() {
+    if (persistTimer !== null) {
+      clearTimeout(persistTimer);
+    }
+    persistTimer = window.setTimeout(() => {
+      persistTimer = null;
+      persistSettings();
+    }, 300);
+  }
+
+  function persistSettings() {
+    const payload = {
+      apiBaseUrl: apiBaseEl.value,
+      skillInput: skillInputEl.value,
+      preset: presetSelectEl.value,
+      strict: strictEl.checked,
+      exportSuggestedPolicy: exportSuggestedEl.checked,
+      taskJson: taskJsonEl.value,
+      policyYaml: policyYamlEl.value,
+    };
+    localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(payload));
+  }
+
+  function restoreSettings() {
+    const raw = localStorage.getItem(STORAGE_KEY_SETTINGS);
+    if (!raw) {
+      return;
+    }
+    try {
+      const payload = JSON.parse(raw);
+      if (payload && typeof payload === "object") {
+        if (typeof payload.apiBaseUrl === "string") {
+          apiBaseEl.value = payload.apiBaseUrl;
+        }
+        if (typeof payload.skillInput === "string") {
+          skillInputEl.value = payload.skillInput;
+        }
+        if (typeof payload.preset === "string") {
+          presetSelectEl.value = payload.preset;
+        }
+        if (typeof payload.strict === "boolean") {
+          strictEl.checked = payload.strict;
+        }
+        if (typeof payload.exportSuggestedPolicy === "boolean") {
+          exportSuggestedEl.checked = payload.exportSuggestedPolicy;
+        }
+        if (typeof payload.taskJson === "string") {
+          taskJsonEl.value = payload.taskJson;
+        }
+        if (typeof payload.policyYaml === "string") {
+          policyYamlEl.value = payload.policyYaml;
+        }
+      }
+    } catch (error) {
+      console.warn("Failed to restore web console settings", error);
+    }
+  }
+
+  function loadHistory() {
+    const raw = localStorage.getItem(STORAGE_KEY_HISTORY);
+    if (!raw) {
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+      return parsed.filter((item) => item && typeof item === "object").slice(0, HISTORY_LIMIT);
+    } catch (error) {
+      console.warn("Failed to parse web console history", error);
+      return [];
+    }
+  }
+
+  function saveHistory() {
+    localStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(requestHistory.slice(0, HISTORY_LIMIT)));
+  }
+
+  function renderHistory() {
+    historyListEl.innerHTML = "";
+    if (requestHistory.length === 0) {
+      const li = document.createElement("li");
+      li.className = "hint";
+      li.textContent = "No recent runs.";
+      historyListEl.appendChild(li);
+      return;
+    }
+
+    for (const item of requestHistory) {
+      const li = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "history-button";
+
+      const requestId = item.request_id || "-";
+      const stamp = item.timestamp || "unknown-time";
+      const status = item.http_status ?? "-";
+      const duration = item.duration_ms ?? "-";
+      const baseUrl = item.base_url || "(same-origin)";
+
+      button.textContent = `${stamp} | status=${status} | duration=${duration}ms | request_id=${requestId}`;
+      button.title = `base_url=${baseUrl}`;
+      button.addEventListener("click", () => {
+        resultRequestIdEl.value = String(requestId);
+        document.getElementById("result-metrics").scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+
+      li.appendChild(button);
+      historyListEl.appendChild(li);
+    }
+  }
+
+  function pushHistory(entry) {
+    requestHistory = [entry]
+      .concat(
+        requestHistory.filter((item) => {
+          return !(
+            item.request_id === entry.request_id &&
+            item.http_status === entry.http_status &&
+            item.timestamp === entry.timestamp
+          );
+        }),
+      )
+      .slice(0, HISTORY_LIMIT);
+    saveHistory();
+    renderHistory();
+  }
+
+  async function copyTextToClipboard(text) {
+    await navigator.clipboard.writeText(text);
   }
 
   async function loadMeta() {
@@ -201,15 +392,53 @@
       }
 
       setMetaStatus(`Meta loaded (request_id=${requestId}).`);
+      renderReproduceCurl();
+      schedulePersist();
     } catch (error) {
       const hint = normalizeBaseUrl(apiBaseEl.value)
-        ? "Check CORS/network/API Base URL settings."
-        : "Check server availability.";
-      setMetaStatus(
-        `Meta request failed: ${String(error)}`,
-        `Fallback to manual skill input. ${hint}`,
-      );
+        ? "Fallback to manual skill input. For cross-origin calls, both DOCOPS_WEB_CONNECT_SRC and DOCOPS_ENABLE_CORS=1 with DOCOPS_CORS_ALLOW_ORIGINS are required."
+        : "Fallback to manual skill input. Check server availability.";
+      setMetaStatus(`Meta request failed: ${String(error)}`, hint);
     }
+  }
+
+  async function handleTaskImport() {
+    const file = importTaskFileEl.files && importTaskFileEl.files[0];
+    if (!file) {
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      taskJsonEl.value = JSON.stringify(parsed, null, 2);
+      setRunState("task.json imported.", "hint");
+      renderReproduceCurl();
+      schedulePersist();
+    } catch (error) {
+      setRunState(`task.json import failed: ${String(error)}`, "err");
+    } finally {
+      importTaskFileEl.value = "";
+    }
+  }
+
+  function handleTaskExport() {
+    const parsedTask = parseTaskJson();
+    if (!parsedTask.ok) {
+      setRunState(`Cannot export: ${parsedTask.message}`, "err");
+      return;
+    }
+
+    const blob = new Blob([JSON.stringify(parsedTask.value, null, 2)], {
+      type: "application/json",
+    });
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = "task.json";
+    a.click();
+    URL.revokeObjectURL(href);
+    setRunState("task.json exported.", "hint");
   }
 
   async function runRequest() {
@@ -264,6 +493,14 @@
         exitCode,
       });
 
+      pushHistory({
+        timestamp: new Date().toISOString(),
+        http_status: response.status,
+        request_id: requestId,
+        duration_ms: durationMs,
+        base_url: normalizeBaseUrl(apiBaseEl.value) || "",
+      });
+
       const contentType = (response.headers.get("content-type") || "").toLowerCase();
 
       if (response.ok && !contentType.includes("application/json")) {
@@ -299,21 +536,63 @@
     } catch (error) {
       const durationMs = Math.round(performance.now() - started);
       setResultMeta({ status: "network", requestId: "", durationMs, exitCode: "-" });
-      const corsHint = normalizeBaseUrl(apiBaseEl.value)
-        ? "Possible CORS block or network issue with API Base URL."
-        : "Possible server/network issue.";
-      errorLinesEl.textContent = `network_error: ${String(error)}\n${corsHint}`;
+      errorLinesEl.textContent = [
+        `network_error: ${String(error)}`,
+        "Cross-origin calls require BOTH:",
+        "1) DOCOPS_WEB_CONNECT_SRC includes your API origin",
+        "2) DOCOPS_ENABLE_CORS=1 and DOCOPS_CORS_ALLOW_ORIGINS includes your web origin",
+      ].join("\n");
       errorJsonEl.textContent = "";
       errorAreaEl.classList.remove("hidden");
       setRunState("Run failed before receiving response.", "err");
+
+      pushHistory({
+        timestamp: new Date().toISOString(),
+        http_status: "network",
+        request_id: "",
+        duration_ms: durationMs,
+        base_url: normalizeBaseUrl(apiBaseEl.value) || "",
+      });
+    }
+  }
+
+  function bindPersistenceEvents() {
+    const watched = [
+      apiBaseEl,
+      skillInputEl,
+      presetSelectEl,
+      strictEl,
+      exportSuggestedEl,
+      taskJsonEl,
+      policyYamlEl,
+      taskTypeSelectEl,
+      skillSelectEl,
+    ];
+
+    for (const element of watched) {
+      element.addEventListener("input", () => {
+        updateMetaLink();
+        renderReproduceCurl();
+        schedulePersist();
+      });
+      element.addEventListener("change", () => {
+        updateMetaLink();
+        renderReproduceCurl();
+        schedulePersist();
+      });
     }
   }
 
   skillSelectEl.addEventListener("change", () => {
     if (!skillInputEl.value.trim() || skillInputEl.value.trim() === skillSelectEl.value) {
       skillInputEl.value = skillSelectEl.value;
+      renderReproduceCurl();
+      schedulePersist();
     }
   });
+
+  importTaskFileEl.addEventListener("change", handleTaskImport);
+  exportTaskBtn.addEventListener("click", handleTaskExport);
 
   apiBaseEl.addEventListener("input", updateMetaLink);
   loadMetaBtn.addEventListener("click", loadMeta);
@@ -325,7 +604,7 @@
       return;
     }
     try {
-      await navigator.clipboard.writeText(value);
+      await copyTextToClipboard(value);
       setRunState("Request ID copied.", "hint");
     } catch (error) {
       resultRequestIdEl.select();
@@ -333,6 +612,24 @@
     }
   });
 
+  copyCurlBtn.addEventListener("click", async () => {
+    const snippet = reproduceCurlEl.textContent || "";
+    if (!snippet.trim()) {
+      return;
+    }
+    try {
+      await copyTextToClipboard(snippet);
+      setRunState("curl snippet copied.", "hint");
+    } catch (error) {
+      setRunState(`Copy failed: ${String(error)}`, "err");
+    }
+  });
+
+  restoreSettings();
+  requestHistory = loadHistory();
+  renderHistory();
+  bindPersistenceEvents();
   updateMetaLink();
+  renderReproduceCurl();
   loadMeta();
 })();

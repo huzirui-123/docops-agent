@@ -108,3 +108,27 @@ button {
 .request-id-input {
   min-width: 240px;
 }
+
+.file-label {
+  display: inline-grid;
+  gap: 4px;
+}
+
+#reproduce-area {
+  margin-top: 12px;
+}
+
+#reproduce-curl {
+  max-height: 240px;
+}
+
+.history-list {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 8px;
+}
+
+.history-button {
+  padding: 4px 8px;
+}
