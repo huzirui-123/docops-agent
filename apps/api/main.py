@@ -207,6 +207,13 @@ async def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/health")
+async def health() -> dict[str, bool]:
+    """Alternative liveness endpoint for deployment probes."""
+
+    return {"ok": True}
+
+
 @app.get("/v1/meta")
 async def meta_v1(request: Request) -> JSONResponse:
     """Metadata endpoint for web/bootstrap clients."""
