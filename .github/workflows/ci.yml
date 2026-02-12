@@ -27,6 +27,24 @@ jobs:
       - name: Pytest
         run: poetry run pytest
 
+  frontend-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Frontend preview smoke
+        run: bash scripts/web_preview_smoke.sh
+      - name: Upload frontend smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-smoke-artifacts
+          path: artifacts/frontend
+
   stability-smoke:
     needs: test
     runs-on: ubuntu-latest

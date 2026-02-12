@@ -88,6 +88,27 @@ Production recommendation:
   - API CORS (`DOCOPS_ENABLE_CORS=1`, `DOCOPS_CORS_ALLOW_ORIGINS=...`)
   - Web connect-src allowlist (`DOCOPS_WEB_CONNECT_SRC=...`)
 
+## Frontend Smoke Verification
+
+Run deterministic frontend smoke checks:
+
+```bash
+bash scripts/web_preview_smoke.sh
+```
+
+The script performs:
+
+- `npm ci` and `npm run build`
+- preview startup with port fallback (`4173..4189`)
+- assertion on built SPA shell (`index.html` contains root + module script)
+- assertion on emitted JS bundle containing stable UI marker (`DocOps Web Console`)
+
+Note:
+
+- SPA root HTML does not necessarily contain rendered UI text directly.
+- Smoke verification therefore checks `index.html` + bundle content instead of `curl / | grep <ui text>`.
+- Failures always exit non-zero and keep logs under `artifacts/frontend/`.
+
 ## Concurrency Model
 
 - `DOCOPS_MAX_CONCURRENCY` is a per-process token limit.

@@ -22,6 +22,8 @@ Docker 快速运行：
 前端工程（M11-0）位于 `apps/web`：
 `cd apps/web && npm install && npm run dev`
 完整前后端联调与生产反代建议见：`docs/DEPLOYMENT.md` 的 `Frontend (M11-0) Dev` 章节。
+前端自动化冒烟验收可运行：`bash scripts/web_preview_smoke.sh`
+验收口径说明见：`docs/DEPLOYMENT.md` 的 `Frontend Smoke Verification` 章节。
 
 ## CLI
 运行单次生成：
