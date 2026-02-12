@@ -7,7 +7,20 @@ from apps.api.main import app
 
 
 @pytest.mark.anyio
-async def test_web_console_returns_html_and_request_id_header() -> None:
+async def test_web_console_default_disabled_returns_not_found() -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/web")
+
+    assert response.status_code == 404
+    assert response.headers["X-Docops-Request-Id"]
+
+
+@pytest.mark.anyio
+async def test_web_console_returns_html_and_request_id_header_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DOCOPS_ENABLE_WEB_CONSOLE", "1")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.get("/web")

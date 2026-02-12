@@ -46,6 +46,7 @@ async def test_meta_disabled_returns_404_with_request_id(
 async def test_web_console_requires_basic_auth_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("DOCOPS_ENABLE_WEB_CONSOLE", "1")
     monkeypatch.setenv("DOCOPS_WEB_BASIC_AUTH", "u:p")
 
     transport = httpx.ASGITransport(app=app)
@@ -80,6 +81,7 @@ async def test_meta_requires_basic_auth_when_enabled(
 
 @pytest.mark.anyio
 async def test_web_console_accepts_valid_basic_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DOCOPS_ENABLE_WEB_CONSOLE", "1")
     monkeypatch.setenv("DOCOPS_WEB_BASIC_AUTH", "u:p")
     token = base64.b64encode(b"u:p").decode("ascii")
 

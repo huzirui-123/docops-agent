@@ -41,7 +41,7 @@ poetry run gunicorn -k uvicorn.workers.UvicornWorker -w 2 apps.api.main:app
 - `DOCOPS_QUEUE_TIMEOUT_SECONDS` (default: `0`)
 - `DOCOPS_MP_START` (default: `spawn`)
 - `DOCOPS_DEBUG_ARTIFACTS` (default: `0`)
-- `DOCOPS_ENABLE_WEB_CONSOLE` (default: `1`)
+- `DOCOPS_ENABLE_WEB_CONSOLE` (default: `0`)
 - `DOCOPS_ENABLE_META` (default: `1`)
 - `DOCOPS_WEB_BASIC_AUTH` (default: unset, format: `user:pass`)
 
@@ -57,6 +57,11 @@ Example:
 export DOCOPS_ENABLE_WEB_CONSOLE=0
 export DOCOPS_ENABLE_META=1
 export DOCOPS_WEB_BASIC_AUTH="docops:change-me"
+```
+
+Enable web console locally:
+```bash
+export DOCOPS_ENABLE_WEB_CONSOLE=1
 ```
 
 - These toggles do **not** change `/v1/run` semantics.

@@ -107,7 +107,7 @@ human 摘要在 run 结束（四件套写盘后）统一打印一次。
 元数据（前端自举）：
 `curl -s http://127.0.0.1:8000/v1/meta`
 
-内置 Web 控制台：
+内置 Web 控制台（默认关闭，需显式开启）：
 `http://127.0.0.1:8000/web`
 
 quick 运行（默认静默，返回 zip）：
@@ -166,7 +166,7 @@ Web 控制台是内置调试/演示界面，不含鉴权。线上暴露前请通
 并发等待超时 `0s`（环境变量：`DOCOPS_QUEUE_TIMEOUT_SECONDS`，`0` 表示立即拒绝并返回 `429`）
 开启 `DOCOPS_DEBUG_ARTIFACTS=1` 时，zip 内会额外包含 `trace.json`。
 调试入口开关：
-`DOCOPS_ENABLE_WEB_CONSOLE`（默认 `1`）
+`DOCOPS_ENABLE_WEB_CONSOLE`（默认 `0`，设为 `1` 开启）
 `DOCOPS_ENABLE_META`（默认 `1`）
 可选基础鉴权：
 `DOCOPS_WEB_BASIC_AUTH="user:pass"`（作用于 `/web` 与 `/v1/meta`）
