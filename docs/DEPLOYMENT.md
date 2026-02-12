@@ -48,6 +48,22 @@ For split frontend/browser access, both conditions are required:
 
 These deployment options do not change `/v1/run` business semantics or error body contract.
 
+## Docker Smoke Test
+
+Run end-to-end container verification:
+
+```bash
+bash scripts/docker_smoke_test.sh
+```
+
+The script validates:
+
+- `/healthz` returns `200` with `{"status":"ok"}`
+- `/health` returns `200` with `{"ok":true}`
+- `/web` is guarded by default (`404`) and includes `X-Docops-Request-Id`
+- `/v1/meta` either returns metadata (`200`) or is treated as disabled/non-fatal
+- `/web` becomes accessible (`200`) when `DOCOPS_ENABLE_WEB_CONSOLE=1`
+
 ## Concurrency Model
 
 - `DOCOPS_MAX_CONCURRENCY` is a per-process token limit.

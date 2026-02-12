@@ -16,6 +16,8 @@ Docker 快速运行：
 `docker build -t docops-agent:local .`
 `docker run --rm -p 8000:8000 docops-agent:local`
 完整参数与安全开关请见：`docs/DEPLOYMENT.md` 的 `Docker Deployment` 章节。
+容器端到端验收可运行：`bash scripts/docker_smoke_test.sh`
+验收项说明见：`docs/DEPLOYMENT.md` 的 `Docker Smoke Test` 章节。
 
 ## CLI
 运行单次生成：

@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IMAGE_TAG="docops-agent:local"
+CONTAINER_NAME="docops_agent_smoke"
+BASE_URL="http://127.0.0.1:8000"
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${TMP_DIR}"; docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true' EXIT
+
+json_assert() {
+  local file_path="$1"
+  local python_code="$2"
+  python - "$file_path" "$python_code" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+code = sys.argv[2]
+obj = json.loads(path.read_text(encoding="utf-8"))
+if not eval(code, {"obj": obj}):
+    raise SystemExit(f"JSON assertion failed: {code}; payload={obj}")
+PY
+}
+
+header_value() {
+  local header_file="$1"
+  local header_name="$2"
+  python - "$header_file" "$header_name" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+key = sys.argv[2].lower()
+for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    if ":" not in line:
+        continue
+    name, value = line.split(":", 1)
+    if name.strip().lower() == key:
+        print(value.strip())
+        raise SystemExit(0)
+print("")
+PY
+}
+
+wait_for_health() {
+  local deadline=$((SECONDS + 30))
+  while (( SECONDS < deadline )); do
+    local status
+    status="$(curl -sS -o /dev/null -w '%{http_code}' "${BASE_URL}/healthz" || true)"
+    if [[ "$status" == "200" ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+run_container() {
+  docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+  docker run -d --rm -p 8000:8000 --name "${CONTAINER_NAME}" "$@" "${IMAGE_TAG}" >/dev/null
+  if ! wait_for_health; then
+    echo "Service did not become healthy within timeout" >&2
+    return 1
+  fi
+}
+
+request_to_files() {
+  local url="$1"
+  local body_file="$2"
+  local headers_file="$3"
+  curl -sS -o "$body_file" -D "$headers_file" -w '%{http_code}' "$url"
+}
+
+echo "[docker-smoke] Building image ${IMAGE_TAG}..."
+docker build -t "${IMAGE_TAG}" .
+
+echo "[docker-smoke] Starting container with default env..."
+run_container
+
+healthz_body="${TMP_DIR}/healthz.json"
+healthz_headers="${TMP_DIR}/healthz.headers"
+healthz_status="$(request_to_files "${BASE_URL}/healthz" "$healthz_body" "$healthz_headers")"
+[[ "$healthz_status" == "200" ]]
+json_assert "$healthz_body" 'obj.get("status") == "ok"'
+
+health_body="${TMP_DIR}/health.json"
+health_headers="${TMP_DIR}/health.headers"
+health_status="$(request_to_files "${BASE_URL}/health" "$health_body" "$health_headers")"
+[[ "$health_status" == "200" ]]
+json_assert "$health_body" 'obj.get("ok") is True'
+
+web_body="${TMP_DIR}/web_default.json"
+web_headers="${TMP_DIR}/web_default.headers"
+web_status="$(request_to_files "${BASE_URL}/web" "$web_body" "$web_headers")"
+[[ "$web_status" == "404" ]]
+web_req_id="$(header_value "$web_headers" "X-Docops-Request-Id")"
+[[ -n "$web_req_id" ]]
+
+meta_body="${TMP_DIR}/meta.json"
+meta_headers="${TMP_DIR}/meta.headers"
+meta_status="$(request_to_files "${BASE_URL}/v1/meta" "$meta_body" "$meta_headers")"
+if [[ "$meta_status" == "200" ]]; then
+  json_assert "$meta_body" '"supported_skills" in obj and isinstance(obj["supported_skills"], list)'
+else
+  echo "[docker-smoke] meta disabled or unavailable (status=${meta_status}), continuing"
+fi
+
+echo "[docker-smoke] Restarting container with DOCOPS_ENABLE_WEB_CONSOLE=1..."
+run_container -e DOCOPS_ENABLE_WEB_CONSOLE=1
+
+web_enabled_body="${TMP_DIR}/web_enabled.html"
+web_enabled_headers="${TMP_DIR}/web_enabled.headers"
+web_enabled_status="$(request_to_files "${BASE_URL}/web" "$web_enabled_body" "$web_enabled_headers")"
+[[ "$web_enabled_status" == "200" ]]
+grep -q "DocOps Web Console" "$web_enabled_body"
+
+echo "SMOKE PASS"
