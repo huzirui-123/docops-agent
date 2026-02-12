@@ -12,6 +12,11 @@ Document Ops Agent MVP（无 LLM）。
 ## 部署
 部署与运行形态说明见：`docs/DEPLOYMENT.md`
 
+Docker 快速运行：
+`docker build -t docops-agent:local .`
+`docker run --rm -p 8000:8000 docops-agent:local`
+完整参数与安全开关请见：`docs/DEPLOYMENT.md` 的 `Docker Deployment` 章节。
+
 ## CLI
 运行单次生成：
 `poetry run docops run --template ./template.docx --task ./task.json --skill meeting_notice --out-dir ./out`

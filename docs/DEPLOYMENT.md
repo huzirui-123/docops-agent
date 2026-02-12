@@ -12,6 +12,42 @@ poetry run uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
 poetry run gunicorn -k uvicorn.workers.UvicornWorker -w 2 apps.api.main:app
 ```
 
+## Docker Deployment
+
+Build and run with Docker:
+
+```bash
+docker build -t docops-agent:local .
+docker run --rm -p 8000:8000 docops-agent:local
+```
+
+Or use Compose:
+
+```bash
+docker compose up --build
+```
+
+Runtime toggles are passed by environment variables. Defaults remain unchanged:
+
+- `/web` stays disabled by default (`DOCOPS_ENABLE_WEB_CONSOLE=0`)
+- optional CORS stays disabled by default (`DOCOPS_ENABLE_CORS=0`)
+
+Example (enable web console + basic auth):
+
+```bash
+docker run --rm -p 8000:8000 \
+  -e DOCOPS_ENABLE_WEB_CONSOLE=1 \
+  -e DOCOPS_WEB_BASIC_AUTH=docops:change-me \
+  docops-agent:local
+```
+
+For split frontend/browser access, both conditions are required:
+
+- browser connect whitelist: `DOCOPS_WEB_CONNECT_SRC=...`
+- API CORS response headers: `DOCOPS_ENABLE_CORS=1` and `DOCOPS_CORS_ALLOW_ORIGINS=...`
+
+These deployment options do not change `/v1/run` business semantics or error body contract.
+
 ## Concurrency Model
 
 - `DOCOPS_MAX_CONCURRENCY` is a per-process token limit.

@@ -1,0 +1,16 @@
+services:
+  docops-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: docops-agent:local
+    ports:
+      - "8000:8000"
+    environment:
+      # Optional toggles (defaults preserved if omitted)
+      # DOCOPS_ENABLE_META: "1"
+      # DOCOPS_ENABLE_WEB_CONSOLE: "1"
+      # DOCOPS_WEB_BASIC_AUTH: "docops:change-me"
+      # DOCOPS_ENABLE_CORS: "1"
+      # DOCOPS_CORS_ALLOW_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173"
+      PYTHONUNBUFFERED: "1"
