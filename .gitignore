@@ -7,3 +7,9 @@ dist/
 build/
 .coverage
 poetry.toml
+node_modules/
+apps/web/node_modules/
+apps/web/dist/
+out_*/
+demo_*.json
+demo_*.docx
