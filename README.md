@@ -170,6 +170,10 @@ Web 控制台是内置调试/演示界面，不含鉴权。线上暴露前请通
 `DOCOPS_ENABLE_META`（默认 `1`）
 可选基础鉴权：
 `DOCOPS_WEB_BASIC_AUTH="user:pass"`（作用于 `/web` 与 `/v1/meta`）
+可选 CORS（默认关闭）：
+`DOCOPS_ENABLE_CORS=1`
+`DOCOPS_CORS_ALLOW_ORIGINS="http://localhost:5173,http://127.0.0.1:5173"`
+详细部署说明见：`docs/DEPLOYMENT.md`
 
 本地压测（需先启动真实服务，不使用 ASGITransport）：
 `python scripts/load_test.py --base-url http://127.0.0.1:8000 --concurrency 8 --requests 20 --skill meeting_notice`

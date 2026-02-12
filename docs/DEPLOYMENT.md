@@ -44,6 +44,10 @@ poetry run gunicorn -k uvicorn.workers.UvicornWorker -w 2 apps.api.main:app
 - `DOCOPS_ENABLE_WEB_CONSOLE` (default: `0`)
 - `DOCOPS_ENABLE_META` (default: `1`)
 - `DOCOPS_WEB_BASIC_AUTH` (default: unset, format: `user:pass`)
+- `DOCOPS_ENABLE_CORS` (default: `0`)
+- `DOCOPS_CORS_ALLOW_ORIGINS` (default when enabled and unset: `*`)
+- `DOCOPS_CORS_ALLOW_CREDENTIALS` (default: `0`)
+- `DOCOPS_CORS_MAX_AGE` (default: `600`)
 
 ## Security / Exposure
 
@@ -68,6 +72,20 @@ export DOCOPS_ENABLE_WEB_CONSOLE=1
 - If using Nginx in front of the service, set:
   - `client_max_body_size >= DOCOPS_MAX_UPLOAD_BYTES`
   - otherwise uploads can be rejected before reaching the app.
+
+## Optional CORS (default off)
+
+For local split frontend debugging, you can enable CORS:
+
+```bash
+export DOCOPS_ENABLE_CORS=1
+export DOCOPS_CORS_ALLOW_ORIGINS="http://localhost:5173,http://127.0.0.1:5173"
+```
+
+- CORS is disabled by default.
+- When enabled, `X-Docops-Request-Id` is exposed to browsers.
+- In production, keep origins strict and apply auth at reverse proxy.
+- CORS settings do **not** change `/v1/run` business semantics or error body structure.
 
 ## Structured Logging
 
