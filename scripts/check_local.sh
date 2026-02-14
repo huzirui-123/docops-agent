@@ -36,41 +36,40 @@ PYTHON_BIN="$(pick_python)"
 
 log "Checking ${BASE_URL}/healthz"
 healthz_json="$(curl -fsS --max-time 5 "${BASE_URL}/healthz")"
-printf '%s' "${healthz_json}" | "${PYTHON_BIN}" - <<'PY'
+"${PYTHON_BIN}" -c '
 import json
 import sys
 
-obj = json.load(sys.stdin)
+obj = json.loads(sys.argv[1])
 if obj.get("status") != "ok":
     raise SystemExit("healthz.status != ok")
-PY
+' "${healthz_json}"
 
 log "Checking ${BASE_URL}/health"
 health_json="$(curl -fsS --max-time 5 "${BASE_URL}/health")"
-printf '%s' "${health_json}" | "${PYTHON_BIN}" - <<'PY'
+"${PYTHON_BIN}" -c '
 import json
 import sys
 
-obj = json.load(sys.stdin)
+obj = json.loads(sys.argv[1])
 if obj.get("ok") is not True:
     raise SystemExit("health.ok != true")
-PY
+' "${health_json}"
 
 log "Checking ${BASE_URL}/v1/meta"
 meta_json="$(curl -fsS --max-time 8 "${BASE_URL}/v1/meta")"
-meta_info="$(printf '%s' "${meta_json}" | "${PYTHON_BIN}" - <<'PY'
+meta_info="$("${PYTHON_BIN}" -c '
 import json
 import sys
 
-obj = json.load(sys.stdin)
+obj = json.loads(sys.argv[1])
 skills = obj.get("supported_skills") or []
 if not skills:
     raise SystemExit("supported_skills empty")
 supports_assist = bool(obj.get("supports_assist"))
 print("1" if supports_assist else "0")
 print(",".join(skills))
-PY
-)"
+' "${meta_json}")"
 
 supports_assist="$(printf '%s' "${meta_info}" | sed -n '1p')"
 skills_csv="$(printf '%s' "${meta_info}" | sed -n '2p')"
@@ -93,11 +92,11 @@ assist_json="$(curl -fsS --max-time "${DOCOPS_CHECK_ASSIST_TIMEOUT}" -X POST "${
   -H "Content-Type: application/json" \
   -d '{"prompt":"请给我1条会议通知写作建议。","skill":"meeting_notice"}')"
 
-assist_info="$(printf '%s' "${assist_json}" | "${PYTHON_BIN}" - <<'PY'
+assist_info="$("${PYTHON_BIN}" -c '
 import json
 import sys
 
-obj = json.load(sys.stdin)
+obj = json.loads(sys.argv[1])
 if obj.get("ok") is not True:
     raise SystemExit("assist.ok != true")
 answer = (obj.get("answer") or "").strip()
@@ -105,8 +104,7 @@ if not answer:
     raise SystemExit("assist.answer empty")
 print(obj.get("model") or "")
 print(obj.get("request_id") or "")
-PY
-)"
+' "${assist_json}")"
 
 assist_model="$(printf '%s' "${assist_info}" | sed -n '1p')"
 assist_request_id="$(printf '%s' "${assist_info}" | sed -n '2p')"
