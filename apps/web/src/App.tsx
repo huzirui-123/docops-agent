@@ -10,6 +10,21 @@ import {
   type ApiResult,
 } from "./api";
 import {
+  allSkillSpecs,
+  defaultFormValues,
+  getSkillSpec,
+  skillLabel,
+  type SkillFormSpec,
+} from "./form_specs";
+import {
+  buildTaskFromForm,
+  buildTaskPreviewFromForm,
+  ensureTaskTypeMatch,
+  maybeTaskJsonFromPayload,
+  parseTaskJson,
+  taskPayloadToFormValues,
+} from "./task_builder";
+import {
   loadHistory,
   loadSettings,
   saveHistory,
@@ -39,28 +54,16 @@ type ResultState = {
 
 type ApiHealthState = "checking" | "ok" | "down";
 type ResultTone = "neutral" | "success" | "warning" | "error";
+type InputMode = "form" | "json";
 
 const HISTORY_LIMIT = 10;
+const DEFAULT_SKILL = "meeting_notice";
 
-const DEFAULT_TASK_JSON = JSON.stringify(
-  {
-    task_type: "meeting_notice",
-    payload: {
-      meeting_title: "XX 项目安全例会（演示）",
-      meeting_date: "2026-02-20",
-      meeting_time: "14:00-15:30",
-      meeting_location: "会议室 B（2F）",
-      organizer: "工程管理部",
-      attendees: ["张三", "李四", "王五", "赵六"],
-    },
-  },
-  null,
-  2,
-);
+const DEFAULT_TASK_JSON = buildTaskPreviewFromForm(DEFAULT_SKILL, defaultFormValues(DEFAULT_SKILL)).taskJson;
 
 const DEFAULT_SETTINGS: ConsoleSettings = {
   apiBaseUrl: defaultApiBaseUrl(),
-  skill: "meeting_notice",
+  skill: DEFAULT_SKILL,
   preset: "quick",
   strict: false,
   exportSuggestedPolicy: false,
@@ -78,56 +81,17 @@ const DEFAULT_RESULT: ResultState = {
   errorJson: "",
 };
 
-const EXAMPLE_TASKS: Record<string, Record<string, unknown>> = {
-  meeting_notice: {
-    task_type: "meeting_notice",
-    payload: {
-      meeting_title: "XX 项目安全例会（演示）",
-      meeting_date: "2026-02-20",
-      meeting_time: "14:00-15:30",
-      meeting_location: "会议室 B（2F）",
-      organizer: "工程管理部",
-      attendees: ["张三", "李四", "王五", "赵六"],
-    },
-  },
-  training_notice: {
-    task_type: "training_notice",
-    payload: {
-      training_title: "消防安全培训通知",
-      training_date: "2026-02-21",
-      training_time: "09:30-11:00",
-      training_location: "一楼报告厅",
-      trainer: "王老师",
-      organizer: "人事部",
-      attendees: ["生产部", "工程部", "行政部"],
-    },
-  },
-  inspection_record: {
-    task_type: "inspection_record",
-    payload: {
-      inspection_subject: "消防通道巡检记录",
-      inspection_date: "2026-02-22",
-      inspector: "张三",
-      department: "工程管理部",
-      issue_summary: "2号楼通道堆放杂物，存在阻塞风险",
-      action_required: "当日18:00前完成清理并拍照回传",
-      deadline: "2026-02-22 18:00",
-    },
-  },
-};
-
-function safeParseTask(taskJson: string):
-  | { ok: true; value: Record<string, unknown> }
-  | { ok: false; message: string } {
-  try {
-    const parsed = JSON.parse(taskJson);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { ok: false, message: "task JSON 必须是对象（object）" };
-    }
-    return { ok: true, value: parsed as Record<string, unknown> };
-  } catch (error) {
-    return { ok: false, message: `task JSON 解析失败：${String(error)}` };
+function presetLabel(preset: string): string {
+  if (preset === "quick") {
+    return "快速（quick）";
   }
+  if (preset === "template") {
+    return "模板优先（template）";
+  }
+  if (preset === "strict") {
+    return "严格（strict）";
+  }
+  return preset;
 }
 
 function labelErrorPayload(payload: unknown): string[] {
@@ -191,32 +155,6 @@ function labelPrecheckPayload(payload: unknown): string[] {
   return lines;
 }
 
-function buildReproduceCurl(settings: ConsoleSettings, baseUrl: string): string {
-  const policyHint = settings.policyYaml.trim()
-    ? "# 如需策略文本可追加 -F policy_yaml='...'"
-    : "# 当前未包含 policy_yaml";
-
-  const taskBody = settings.taskJson.trim() || "{}";
-
-  return [
-    "cat > /tmp/task.json <<'JSON'",
-    taskBody,
-    "JSON",
-    "",
-    policyHint,
-    `curl -sS -X POST "${baseUrl}/v1/run" \\`,
-    '  -F "template=@/path/to/template.docx;type=application/vnd.openxmlformats-officedocument.wordprocessingml.document" \\',
-    '  -F "task=@/tmp/task.json;type=application/json" \\',
-    `  -F "skill=${settings.skill}" \\`,
-    `  -F "preset=${settings.preset}" \\`,
-    `  -F "strict=${settings.strict ? "true" : "false"}" \\`,
-    `  -F "export_suggested_policy=${settings.exportSuggestedPolicy ? "true" : "false"}" \\`,
-    "  -D headers.txt \\",
-    "  -o docops_outputs.zip",
-    'grep -i "X-Docops-Request-Id" headers.txt',
-  ].join("\n");
-}
-
 function explainExitCode(exitCode: string): string {
   if (exitCode === "0") {
     return "解释：执行成功，已生成结果文档。";
@@ -274,14 +212,52 @@ function resultToneLabel(tone: ResultTone): string {
   return "等待结果";
 }
 
+function buildInitialFormValues(): Record<string, Record<string, string>> {
+  const values: Record<string, Record<string, string>> = {};
+  for (const spec of allSkillSpecs()) {
+    values[spec.skill] = defaultFormValues(spec.skill);
+  }
+  return values;
+}
+
+function buildReproduceCurl(settings: ConsoleSettings, taskJson: string, baseUrl: string): string {
+  const policyHint = settings.policyYaml.trim()
+    ? "# 如需策略文本可追加 -F policy_yaml='...'"
+    : "# 当前未包含 policy_yaml";
+
+  const taskBody = taskJson.trim() || "{}";
+
+  return [
+    "cat > /tmp/task.json <<'JSON'",
+    taskBody,
+    "JSON",
+    "",
+    policyHint,
+    `curl -sS -X POST \"${baseUrl}/v1/run\" \\\\`,
+    '  -F "template=@/path/to/template.docx;type=application/vnd.openxmlformats-officedocument.wordprocessingml.document" \\\\',
+    '  -F "task=@/tmp/task.json;type=application/json" \\\\',
+    `  -F "skill=${settings.skill}" \\\\`,
+    `  -F "preset=${settings.preset}" \\\\`,
+    `  -F "strict=${settings.strict ? "true" : "false"}" \\\\`,
+    `  -F "export_suggested_policy=${settings.exportSuggestedPolicy ? "true" : "false"}" \\\\`,
+    "  -D headers.txt \\\\",
+    "  -o docops_outputs.zip",
+    'grep -i "X-Docops-Request-Id" headers.txt',
+  ].join("\n");
+}
+
+function modeLabel(mode: InputMode): string {
+  return mode === "form" ? "表单模式（推荐）" : "高级 JSON 模式";
+}
+
 export default function App() {
   const [settings, setSettings] = useState<ConsoleSettings>(() => loadSettings(DEFAULT_SETTINGS));
   const [taskTypeSelect, setTaskTypeSelect] = useState<string>("");
   const [meta, setMeta] = useState<MetaState>({
     status: "idle",
-    skills: ["meeting_notice"],
+    skills: [DEFAULT_SKILL],
     presets: ["quick", "template", "strict"],
-    taskTypes: ["meeting_notice"],
+    taskTypes: [DEFAULT_SKILL],
     message: "尚未加载元数据。",
     warning: "",
   });
@@ -290,15 +266,84 @@ export default function App() {
   const [resultHighlight, setResultHighlight] = useState<boolean>(false);
   const [result, setResult] = useState<ResultState>(DEFAULT_RESULT);
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
+  const [inputMode, setInputMode] = useState<InputMode>("form");
+  const [jsonEditable, setJsonEditable] = useState<boolean>(false);
+  const [formValuesBySkill, setFormValuesBySkill] = useState<Record<string, Record<string, string>>>(() =>
+    buildInitialFormValues(),
+  );
+
+  const templateInputRef = useRef<HTMLInputElement>(null);
+  const initializedRef = useRef<boolean>(false);
   const persistTimer = useRef<number | null>(null);
+
+  const currentSpec = useMemo<SkillFormSpec | null>(() => getSkillSpec(settings.skill), [settings.skill]);
+  const currentFormValues = formValuesBySkill[settings.skill] ?? {};
+  const generatedFromForm = useMemo(
+    () => buildTaskPreviewFromForm(settings.skill, currentFormValues),
+    [settings.skill, currentFormValues],
+  );
 
   const normalizedBaseUrl = useMemo(() => normalizeApiBaseUrl(settings.apiBaseUrl), [settings.apiBaseUrl]);
   const effectiveBaseUrl = normalizedBaseUrl || window.location.origin;
   const reproduceCurl = useMemo(
-    () => buildReproduceCurl(settings, effectiveBaseUrl),
-    [settings, effectiveBaseUrl],
+    () => buildReproduceCurl(settings, inputMode === "form" ? generatedFromForm.taskJson : settings.taskJson, effectiveBaseUrl),
+    [effectiveBaseUrl, generatedFromForm.taskJson, inputMode, settings],
   );
   const resultTone = useMemo(() => getResultTone(result), [result]);
+
+  const jsonConflictMessage = useMemo(() => {
+    if (inputMode !== "json" || !jsonEditable || !currentSpec) {
+      return "";
+    }
+    const parsed = parseTaskJson(settings.taskJson);
+    if (!parsed.ok) {
+      return "";
+    }
+    const generatedParsed = JSON.parse(generatedFromForm.taskJson) as { task_type?: unknown; payload?: unknown };
+    const manualComparable = JSON.stringify(parsed.task);
+    const generatedComparable = JSON.stringify(generatedParsed);
+    if (manualComparable !== generatedComparable) {
+      return "你正在使用手动 JSON，内容与表单不一致。运行时将以当前 JSON 文本为准。";
+    }
+    return "";
+  }, [currentSpec, generatedFromForm.taskJson, inputMode, jsonEditable, settings.taskJson]);
+
+  useEffect(() => {
+    if (initializedRef.current) {
+      return;
+    }
+    initializedRef.current = true;
+
+    const parsed = parseTaskJson(settings.taskJson);
+    if (!parsed.ok) {
+      return;
+    }
+
+    const taskType = parsed.task.task_type;
+    if (typeof taskType !== "string") {
+      return;
+    }
+    const payloadValues = taskPayloadToFormValues(taskType, parsed.task.payload);
+    if (Object.keys(payloadValues).length === 0) {
+      return;
+    }
+
+    setFormValuesBySkill((prev) => ({
+      ...prev,
+      [taskType]: {
+        ...(prev[taskType] ?? {}),
+        ...payloadValues,
+      },
+    }));
+  }, [settings.taskJson]);
+
+  useEffect(() => {
+    if (inputMode !== "form") {
+      return;
+    }
+    const nextTaskJson = generatedFromForm.taskJson;
+    setSettings((prev) => (prev.taskJson === nextTaskJson ? prev : { ...prev, taskJson: nextTaskJson }));
+  }, [generatedFromForm.taskJson, inputMode]);
 
   useEffect(() => {
     if (persistTimer.current !== null) {
@@ -346,15 +391,32 @@ export default function App() {
     setSettings((prev) => ({ ...prev, [key]: value }));
   };
 
+  const updateFormValue = (fieldKey: string, value: string) => {
+    const skill = settings.skill;
+    setFormValuesBySkill((prev) => ({
+      ...prev,
+      [skill]: {
+        ...(prev[skill] ?? {}),
+        [fieldKey]: value,
+      },
+    }));
+  };
+
+  const resetFormToExample = (skill: string) => {
+    const values = defaultFormValues(skill);
+    setFormValuesBySkill((prev) => ({
+      ...prev,
+      [skill]: values,
+    }));
+    setRunState(`已重置为“${skillLabel(skill)}”官方示例。`);
+  };
+
   const applyExample = (skill: string) => {
-    const example = EXAMPLE_TASKS[skill];
-    if (!example) {
-      return;
-    }
     updateSetting("skill", skill);
     setTaskTypeSelect(skill);
-    updateSetting("taskJson", JSON.stringify(example, null, 2));
-    setRunState(`已填入 ${skill} 示例，请上传模板后先预检再运行。`);
+    setInputMode("form");
+    setJsonEditable(false);
+    resetFormToExample(skill);
   };
 
   const loadMetaClick = async () => {
@@ -385,25 +447,24 @@ export default function App() {
 
       setMeta({
         status: "ok",
-        skills: skills.length ? skills : ["meeting_notice"],
+        skills: skills.length ? skills : [DEFAULT_SKILL],
         presets: presets.length ? presets : ["quick", "template", "strict"],
-        taskTypes: taskTypes.length ? taskTypes : ["meeting_notice"],
+        taskTypes: taskTypes.length ? taskTypes : [DEFAULT_SKILL],
         message: `元数据加载成功（request_id=${response.requestId || "n/a"}）。`,
         warning: "",
       });
 
-      setSettings((prev) => ({
-        ...prev,
-        skill: skills.includes(prev.skill) ? prev.skill : (skills[0] ?? prev.skill),
-        preset: presets.includes(prev.preset) ? prev.preset : (presets[0] ?? prev.preset),
-      }));
+      setSettings((prev) => {
+        const nextSkill = skills.includes(prev.skill) ? prev.skill : (skills[0] ?? prev.skill);
+        const nextPreset = presets.includes(prev.preset) ? prev.preset : (presets[0] ?? prev.preset);
+        return { ...prev, skill: nextSkill, preset: nextPreset };
+      });
     } catch (error) {
       setMeta((prev) => ({
         ...prev,
         status: "error",
         message: `元数据请求失败：${String(error)}`,
-        warning:
-          "你可以手动输入 skill。若跨域调用，请同时配置 DOCOPS_WEB_CONNECT_SRC 与 CORS。",
+        warning: "你可以手动输入 skill。若跨域调用，请同时配置 DOCOPS_WEB_CONNECT_SRC 与 CORS。",
       }));
     }
   };
@@ -415,9 +476,32 @@ export default function App() {
     }
     try {
       const content = await file.text();
-      const parsed = JSON.parse(content);
-      updateSetting("taskJson", JSON.stringify(parsed, null, 2));
-      setRunState("task.json 导入成功");
+      const parsed = parseTaskJson(content);
+      if (!parsed.ok) {
+        setRunState(parsed.message);
+        return;
+      }
+      updateSetting("taskJson", JSON.stringify(parsed.task, null, 2));
+      setInputMode("json");
+      setJsonEditable(true);
+      const taskType = typeof parsed.task.task_type === "string" ? parsed.task.task_type : "";
+      if (taskType.length > 0) {
+        updateSetting("skill", taskType);
+        setTaskTypeSelect(taskType);
+      }
+      if (typeof parsed.task.task_type === "string") {
+        const nextFormValues = taskPayloadToFormValues(parsed.task.task_type, parsed.task.payload);
+        if (Object.keys(nextFormValues).length > 0) {
+          setFormValuesBySkill((prev) => ({
+            ...prev,
+            [parsed.task.task_type as string]: {
+              ...(prev[parsed.task.task_type as string] ?? {}),
+              ...nextFormValues,
+            },
+          }));
+        }
+      }
+      setRunState("task.json 导入成功（已切换到高级 JSON 模式）");
     } catch (error) {
       setRunState(`task.json 导入失败：${String(error)}`);
     } finally {
@@ -426,12 +510,13 @@ export default function App() {
   };
 
   const exportTaskJson = () => {
-    const parsed = safeParseTask(settings.taskJson);
+    const sourceJson = inputMode === "form" ? generatedFromForm.taskJson : settings.taskJson;
+    const parsed = parseTaskJson(sourceJson);
     if (!parsed.ok) {
       setRunState(`无法导出：${parsed.message}`);
       return;
     }
-    const blob = new Blob([JSON.stringify(parsed.value, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(parsed.task, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -441,22 +526,22 @@ export default function App() {
   };
 
   const formatTaskJson = () => {
-    const parsed = safeParseTask(settings.taskJson);
+    const parsed = parseTaskJson(settings.taskJson);
     if (!parsed.ok) {
       setRunState(`格式化失败：${parsed.message}`);
       return;
     }
-    updateSetting("taskJson", JSON.stringify(parsed.value, null, 2));
-    setRunState("Task JSON 已格式化");
+    updateSetting("taskJson", JSON.stringify(parsed.task, null, 2));
+    setRunState("任务 JSON 已格式化");
   };
 
   const validateTaskJson = () => {
-    const parsed = safeParseTask(settings.taskJson);
+    const parsed = parseTaskJson(settings.taskJson);
     if (!parsed.ok) {
       setRunState(`校验失败：${parsed.message}`);
       return;
     }
-    setRunState("Task JSON 校验通过");
+    setRunState("任务 JSON 校验通过");
   };
 
   const copyRequestId = async () => {
@@ -465,7 +550,7 @@ export default function App() {
     }
     try {
       await navigator.clipboard.writeText(result.requestId);
-      setRunState("Request ID 已复制");
+      setRunState("请求 ID 已复制");
     } catch (error) {
       setRunState(`复制失败：${String(error)}`);
     }
@@ -474,7 +559,7 @@ export default function App() {
   const copyCurl = async () => {
     try {
       await navigator.clipboard.writeText(reproduceCurl);
-      setRunState("curl 复现命令已复制");
+      setRunState("复现命令已复制");
     } catch (error) {
       setRunState(`复制失败：${String(error)}`);
     }
@@ -509,32 +594,54 @@ export default function App() {
     setResult(DEFAULT_RESULT);
   };
 
+  const buildSubmissionTask = (): { ok: true; taskJson: string } | { ok: false; message: string } => {
+    if (inputMode === "form") {
+      const built = buildTaskFromForm(settings.skill, currentFormValues);
+      if (!built.ok) {
+        return { ok: false, message: built.message };
+      }
+      if (taskTypeSelect && taskTypeSelect !== built.task.task_type) {
+        return {
+          ok: false,
+          message: `所选任务类型（${taskTypeSelect}）必须与任务（${built.task.task_type}）一致。`,
+        };
+      }
+      return { ok: true, taskJson: built.taskJson };
+    }
+
+    const parsed = parseTaskJson(settings.taskJson);
+    if (!parsed.ok) {
+      return { ok: false, message: parsed.message };
+    }
+
+    const mismatch = ensureTaskTypeMatch(settings.skill, parsed.task.task_type);
+    if (mismatch) {
+      return { ok: false, message: mismatch.message };
+    }
+
+    const taskType = String(parsed.task.task_type);
+    if (taskTypeSelect && taskTypeSelect !== taskType) {
+      return {
+        ok: false,
+        message: `所选任务类型（${taskTypeSelect}）必须与任务 JSON（${taskType}）一致。`,
+      };
+    }
+
+    return { ok: true, taskJson: maybeTaskJsonFromPayload(taskType, parsed.task.payload) };
+  };
+
   const runClick = async () => {
     resetResult();
 
-    const templateFile = (document.getElementById("template-file") as HTMLInputElement).files?.[0];
+    const templateFile = templateInputRef.current?.files?.[0];
     if (!templateFile) {
       setRunState("请先选择模板 .docx 文件");
       return;
     }
 
-    const parsedTask = safeParseTask(settings.taskJson);
-    if (!parsedTask.ok) {
-      setRunState(parsedTask.message);
-      return;
-    }
-
-    const taskType = typeof parsedTask.value.task_type === "string" ? parsedTask.value.task_type : "";
-    if (!taskType) {
-      setRunState("task JSON 中必须包含 task_type");
-      return;
-    }
-    if (settings.skill.trim() !== taskType) {
-      setRunState(`skill（${settings.skill}）必须与 task_type（${taskType}）一致`);
-      return;
-    }
-    if (taskTypeSelect && taskTypeSelect !== taskType) {
-      setRunState(`所选 task type（${taskTypeSelect}）必须与 task JSON（${taskType}）一致`);
+    const task = buildSubmissionTask();
+    if (!task.ok) {
+      setRunState(task.message);
       return;
     }
 
@@ -545,7 +652,7 @@ export default function App() {
       const apiResult: ApiResult = await runDocOps({
         baseUrl: settings.apiBaseUrl,
         templateFile,
-        taskJson: settings.taskJson,
+        taskJson: task.taskJson,
         skill: settings.skill,
         preset: settings.preset,
         strict: settings.strict,
@@ -612,29 +719,15 @@ export default function App() {
   const precheckClick = async () => {
     resetResult();
 
-    const templateFile = (document.getElementById("template-file") as HTMLInputElement).files?.[0];
+    const templateFile = templateInputRef.current?.files?.[0];
     if (!templateFile) {
       setRunState("请先选择模板 .docx 文件");
       return;
     }
 
-    const parsedTask = safeParseTask(settings.taskJson);
-    if (!parsedTask.ok) {
-      setRunState(parsedTask.message);
-      return;
-    }
-
-    const taskType = typeof parsedTask.value.task_type === "string" ? parsedTask.value.task_type : "";
-    if (!taskType) {
-      setRunState("task JSON 中必须包含 task_type");
-      return;
-    }
-    if (settings.skill.trim() !== taskType) {
-      setRunState(`skill（${settings.skill}）必须与 task_type（${taskType}）一致`);
-      return;
-    }
-    if (taskTypeSelect && taskTypeSelect !== taskType) {
-      setRunState(`所选 task type（${taskTypeSelect}）必须与 task JSON（${taskType}）一致`);
+    const task = buildSubmissionTask();
+    if (!task.ok) {
+      setRunState(task.message);
       return;
     }
 
@@ -645,7 +738,7 @@ export default function App() {
       const apiResult: ApiResult = await precheckDocOps({
         baseUrl: settings.apiBaseUrl,
         templateFile,
-        taskJson: settings.taskJson,
+        taskJson: task.taskJson,
         skill: settings.skill,
       });
       const durationMs = Math.round(performance.now() - started);
@@ -705,9 +798,7 @@ export default function App() {
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <h1 className="text-2xl font-bold text-slate-900">文书工坊（DocOps Web Console）</h1>
-              <p className="mt-2 text-sm text-slate-600">
-                面向普通用户的文书生成控制台：看提示、按步骤操作即可完成文档生成。
-              </p>
+              <p className="mt-2 text-sm text-slate-600">面向普通用户的文书生成控制台：看提示、按步骤操作即可完成文档生成。</p>
             </div>
             <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
               <p className="text-xs uppercase tracking-wide text-slate-500">后端状态</p>
@@ -730,13 +821,11 @@ export default function App() {
         <section className="mb-4 rounded-xl border border-indigo-100 bg-indigo-50 p-6 shadow-sm">
           <h2 className="mb-3 text-lg font-semibold text-indigo-900">新手快速开始（3 步）</h2>
           <ol className="list-decimal space-y-2 pl-5 text-sm text-indigo-900">
-            <li>点击“加载 Meta”，自动读取后端支持的业务类型和参数。</li>
-            <li>上传模板文件（.docx），再导入 task.json 或点击“填入示例”。</li>
-            <li>先做“预检”，确认无缺失后点击“运行”，下载 ZIP 成果。</li>
+            <li>点击“加载元数据”，读取后端支持的业务类型和参数。</li>
+            <li>上传模板文件（.docx），在表单中填写内容或使用官方示例。</li>
+            <li>先做“预检”，确认无缺失后点击“开始生成”，下载 ZIP 成果。</li>
           </ol>
-          <p className="mt-3 text-xs text-indigo-700">
-            不懂技术也没关系：先用示例跑通，再把示例里的文字改成你的真实业务内容。
-          </p>
+          <p className="mt-3 text-xs text-indigo-700">不懂技术也没关系：默认用“表单模式（推荐）”，系统会自动生成合法任务 JSON。</p>
         </section>
 
         <section className="step-card">
@@ -757,7 +846,7 @@ export default function App() {
             </label>
             <div className="flex items-end gap-2">
               <button className="btn" onClick={loadMetaClick} type="button">
-                加载 Meta
+                加载元数据
               </button>
               <a className="link" href={apiUrl(settings.apiBaseUrl, "/v1/meta")} target="_blank" rel="noreferrer">
                 打开 /v1/meta
@@ -773,30 +862,45 @@ export default function App() {
             <span className="step-chip mr-2">步骤 2</span>
             填写内容
           </h2>
+
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <button type="button" className={inputMode === "form" ? "btn-primary" : "btn"} onClick={() => setInputMode("form")}>
+              表单模式（推荐）
+            </button>
+            <button type="button" className={inputMode === "json" ? "btn-primary" : "btn"} onClick={() => setInputMode("json")}>
+              高级 JSON 模式
+            </button>
+            <span className="text-xs text-slate-500">当前模式：{modeLabel(inputMode)}</span>
+          </div>
+
           <div className="mb-3 flex flex-wrap gap-2">
             <button type="button" className="btn" onClick={() => applyExample("meeting_notice")}>
-              填入示例：会议通知
+              官方示例：会议通知
             </button>
             <button type="button" className="btn" onClick={() => applyExample("training_notice")}>
-              填入示例：培训通知
+              官方示例：培训通知
             </button>
             <button type="button" className="btn" onClick={() => applyExample("inspection_record")}>
-              填入示例：检查记录
+              官方示例：检查记录
+            </button>
+            <button type="button" className="btn" onClick={() => resetFormToExample(settings.skill)}>
+              重置当前表单
             </button>
           </div>
+
           <div className="grid gap-4 md:grid-cols-2">
             <label className="text-sm text-slate-700">
-              Skill
+              技能类型
               <div className="mt-1 flex gap-2">
                 <select
                   className="flex-1 rounded-md border border-slate-300 px-3 py-2"
                   value={meta.skills.includes(settings.skill) ? settings.skill : ""}
                   onChange={(event) => updateSetting("skill", event.target.value)}
                 >
-                  {!meta.skills.includes(settings.skill) && <option value="">（手动输入值）</option>}
+                  {!meta.skills.includes(settings.skill) && <option value="">（手动输入）</option>}
                   {meta.skills.map((skill) => (
                     <option key={skill} value={skill}>
-                      {skill}
+                      {skillLabel(skill)}
                     </option>
                   ))}
                 </select>
@@ -810,23 +914,23 @@ export default function App() {
             </label>
 
             <label className="text-sm text-slate-700">
-              Task Type（可选下拉）
+              任务类型（可选下拉）
               <select
                 className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2"
                 value={taskTypeSelect}
                 onChange={(event) => setTaskTypeSelect(event.target.value)}
               >
-                <option value="">（以 task JSON 为准）</option>
+                <option value="">（以任务数据为准）</option>
                 {meta.taskTypes.map((taskType) => (
                   <option key={taskType} value={taskType}>
-                    {taskType}
+                    {skillLabel(taskType)}
                   </option>
                 ))}
               </select>
             </label>
 
             <label className="text-sm text-slate-700">
-              Preset
+              运行预设
               <select
                 className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2"
                 value={settings.preset}
@@ -834,7 +938,7 @@ export default function App() {
               >
                 {meta.presets.map((preset) => (
                   <option key={preset} value={preset}>
-                    {preset}
+                    {presetLabel(preset)}
                   </option>
                 ))}
               </select>
@@ -846,13 +950,13 @@ export default function App() {
                 checked={settings.strict}
                 onChange={(event) => updateSetting("strict", event.target.checked)}
               />
-              严格模式（Strict）
+              严格模式
             </label>
 
             <label className="text-sm text-slate-700">
               模板文件（.docx）
               <input
-                id="template-file"
+                ref={templateInputRef}
                 className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2"
                 type="file"
                 accept=".docx"
@@ -869,11 +973,64 @@ export default function App() {
             </label>
           </div>
 
+          {inputMode === "form" && currentSpec && (
+            <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-4">
+              <p className="mb-3 text-sm font-semibold text-slate-800">表单输入（{currentSpec.displayName}）</p>
+              <div className="grid gap-3 md:grid-cols-2">
+                {currentSpec.fields.map((field) => {
+                  const value = currentFormValues[field.key] ?? "";
+                  const requiredMark = field.required ? " *" : "";
+                  if (field.kind === "textarea" || field.kind === "list") {
+                    return (
+                      <label key={field.key} className="text-sm text-slate-700 md:col-span-2">
+                        {field.label}
+                        {requiredMark}
+                        <textarea
+                          className="mt-1 h-24 w-full rounded-md border border-slate-300 px-3 py-2"
+                          placeholder={field.placeholder ?? ""}
+                          value={value}
+                          onChange={(event) => updateFormValue(field.key, event.target.value)}
+                        />
+                        {field.help && <p className="mt-1 text-xs text-slate-500">{field.help}</p>}
+                      </label>
+                    );
+                  }
+
+                  return (
+                    <label key={field.key} className="text-sm text-slate-700">
+                      {field.label}
+                      {requiredMark}
+                      <input
+                        className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2"
+                        type="text"
+                        placeholder={field.placeholder ?? ""}
+                        value={value}
+                        onChange={(event) => updateFormValue(field.key, event.target.value)}
+                      />
+                      {field.help && <p className="mt-1 text-xs text-slate-500">{field.help}</p>}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {inputMode === "json" && (
+            <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-4">
+              <label className="mb-2 flex items-center gap-2 text-sm text-amber-800">
+                <input type="checkbox" checked={jsonEditable} onChange={(event) => setJsonEditable(event.target.checked)} />
+                我已了解风险，允许手动编辑 JSON
+              </label>
+              {jsonConflictMessage && <p className="mb-2 text-xs text-amber-800">{jsonConflictMessage}</p>}
+            </div>
+          )}
+
           <label className="mt-4 block text-sm text-slate-700">
-            任务 JSON
+            任务内容（JSON）{inputMode === "form" ? "（表单自动生成，只读）" : ""}
             <textarea
-              className="mt-1 h-52 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
-              value={settings.taskJson}
+              className="mt-1 h-56 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
+              value={inputMode === "form" ? generatedFromForm.taskJson : settings.taskJson}
+              readOnly={inputMode === "form" || !jsonEditable}
               onChange={(event) => updateSetting("taskJson", event.target.value)}
             />
           </label>
@@ -886,17 +1043,17 @@ export default function App() {
             <button type="button" className="btn" onClick={exportTaskJson}>
               导出 task.json
             </button>
-            <button type="button" className="btn" onClick={formatTaskJson}>
-              格式化 JSON
+            <button type="button" className="btn" onClick={formatTaskJson} disabled={inputMode === "form" || !jsonEditable}>
+              一键格式化
             </button>
             <button type="button" className="btn" onClick={validateTaskJson}>
-              校验 JSON
+              语法校验
             </button>
             <span className="text-xs text-slate-500">浏览器不会保存模板文件，请每次重新选择。</span>
           </div>
 
           <label className="mt-4 block text-sm text-slate-700">
-            policy_yaml（可选）
+            策略文本（可选）
             <textarea
               className="mt-1 h-28 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
               value={settings.policyYaml}
@@ -910,15 +1067,13 @@ export default function App() {
             <span className="step-chip mr-2">步骤 3</span>
             执行与预检
           </h2>
-          <p className="mb-3 text-sm text-slate-600">
-            预检不会生成文件，只检查模板和字段是否可用；运行才会真正生成文档并返回 ZIP。
-          </p>
+          <p className="mb-3 text-sm text-slate-600">预检不会生成文件，只检查模板和字段是否可用；开始生成会真正返回 ZIP 文件。</p>
           <div className="flex flex-wrap items-center gap-3">
             <button className="btn-primary-lg" onClick={runClick} type="button">
-              运行（Run）
+              开始生成
             </button>
             <button className="btn-lg" onClick={precheckClick} type="button">
-              预检（Precheck）
+              先做预检
             </button>
             <span className="text-sm text-slate-600">{runState}</span>
           </div>
@@ -926,9 +1081,7 @@ export default function App() {
 
         <section
           id="result-block"
-          className={`step-card transition ${
-            resultHighlight ? "ring-2 ring-indigo-400 ring-offset-2" : ""
-          }`}
+          className={`step-card transition ${resultHighlight ? "ring-2 ring-indigo-400 ring-offset-2" : ""}`}
         >
           <div className="mb-2 flex items-center justify-between gap-2">
             <h2 className="text-lg font-semibold text-slate-900">D. 执行结果</h2>
@@ -952,7 +1105,7 @@ export default function App() {
               <p className="value">{result.status}</p>
             </div>
             <div>
-              <p className="label">Request ID</p>
+              <p className="label">请求 ID</p>
               <div className="flex items-center gap-2">
                 <input className="input-lite" readOnly value={result.requestId} />
                 <button className="btn" onClick={copyRequestId} type="button">
@@ -965,7 +1118,7 @@ export default function App() {
               <p className="value">{result.durationMs ?? "-"}</p>
             </div>
             <div>
-              <p className="label">Exit Code</p>
+              <p className="label">退出码</p>
               <p className="value">{result.exitCode}</p>
             </div>
           </div>
@@ -995,10 +1148,10 @@ export default function App() {
           )}
 
           <div className="mt-4">
-            <h3 className="text-base font-semibold text-slate-900">复现命令（curl）</h3>
+            <h3 className="text-base font-semibold text-slate-900">复现命令</h3>
             <div className="mt-2 flex items-center gap-2">
               <button className="btn" onClick={copyCurl} type="button">
-                复制 curl
+                复制复现命令
               </button>
               <button className="btn" onClick={copyIssueBundle} type="button">
                 复制问题排查信息
