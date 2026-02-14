@@ -5,6 +5,7 @@ export type FieldKind = "text" | "textarea" | "date" | "time" | "list";
 export type FieldSpec = {
   key: string;
   label: string;
+  templateToken: string;
   required: boolean;
   kind: FieldKind;
   placeholder?: string;
@@ -23,12 +24,20 @@ const meetingNoticeSpec: SkillFormSpec = {
   skill: "meeting_notice",
   displayName: "会议通知",
   fields: [
-    { key: "meeting_title", label: "会议主题", required: true, kind: "text", placeholder: "例如：XX项目安全例会" },
-    { key: "meeting_date", label: "会议日期", required: true, kind: "date", help: "格式：YYYY-MM-DD" },
-    { key: "meeting_time", label: "会议时间", required: true, kind: "time", placeholder: "例如：14:00-15:30" },
-    { key: "meeting_location", label: "会议地点", required: true, kind: "text", placeholder: "例如：会议室 B（2F）" },
-    { key: "organizer", label: "组织单位", required: true, kind: "text", placeholder: "例如：工程管理部" },
-    { key: "attendees", label: "参会人员", required: false, kind: "list", placeholder: "每行一个姓名，或用逗号分隔", help: "支持换行或逗号分隔。" },
+    { key: "meeting_title", label: "会议主题", templateToken: "MEETING_TITLE", required: true, kind: "text", placeholder: "例如：XX项目安全例会" },
+    { key: "meeting_date", label: "会议日期", templateToken: "MEETING_DATE", required: true, kind: "date", help: "格式：YYYY-MM-DD" },
+    { key: "meeting_time", label: "会议时间", templateToken: "MEETING_TIME", required: true, kind: "time", placeholder: "例如：14:00-15:30" },
+    { key: "meeting_location", label: "会议地点", templateToken: "MEETING_LOCATION", required: true, kind: "text", placeholder: "例如：会议室 B（2F）" },
+    { key: "organizer", label: "组织单位", templateToken: "ORGANIZER", required: true, kind: "text", placeholder: "例如：工程管理部" },
+    {
+      key: "attendees",
+      label: "参会人员",
+      templateToken: "ATTENDEES",
+      required: false,
+      kind: "list",
+      placeholder: "每行一个姓名，或用逗号分隔",
+      help: "支持换行或逗号分隔。",
+    },
   ],
   requiredKeys: ["meeting_title", "meeting_date", "meeting_time", "meeting_location", "organizer"],
   examplePayload: {
@@ -45,13 +54,21 @@ const trainingNoticeSpec: SkillFormSpec = {
   skill: "training_notice",
   displayName: "培训通知",
   fields: [
-    { key: "training_title", label: "培训主题", required: true, kind: "text", placeholder: "例如：消防安全培训通知" },
-    { key: "training_date", label: "培训日期", required: true, kind: "date", help: "格式：YYYY-MM-DD" },
-    { key: "training_time", label: "培训时间", required: true, kind: "time", placeholder: "例如：09:30-11:00" },
-    { key: "training_location", label: "培训地点", required: true, kind: "text", placeholder: "例如：一楼报告厅" },
-    { key: "trainer", label: "讲师", required: true, kind: "text", placeholder: "例如：王老师" },
-    { key: "organizer", label: "主办单位", required: false, kind: "text", placeholder: "例如：人事部" },
-    { key: "attendees", label: "参加对象", required: false, kind: "list", placeholder: "每行一个部门/人员", help: "支持换行或逗号分隔。" },
+    { key: "training_title", label: "培训主题", templateToken: "TRAINING_TITLE", required: true, kind: "text", placeholder: "例如：消防安全培训通知" },
+    { key: "training_date", label: "培训日期", templateToken: "TRAINING_DATE", required: true, kind: "date", help: "格式：YYYY-MM-DD" },
+    { key: "training_time", label: "培训时间", templateToken: "TRAINING_TIME", required: true, kind: "time", placeholder: "例如：09:30-11:00" },
+    { key: "training_location", label: "培训地点", templateToken: "TRAINING_LOCATION", required: true, kind: "text", placeholder: "例如：一楼报告厅" },
+    { key: "trainer", label: "讲师", templateToken: "TRAINER", required: true, kind: "text", placeholder: "例如：王老师" },
+    { key: "organizer", label: "主办单位", templateToken: "ORGANIZER", required: false, kind: "text", placeholder: "例如：人事部" },
+    {
+      key: "attendees",
+      label: "参加对象",
+      templateToken: "ATTENDEES",
+      required: false,
+      kind: "list",
+      placeholder: "每行一个部门/人员",
+      help: "支持换行或逗号分隔。",
+    },
   ],
   requiredKeys: ["training_title", "training_date", "training_time", "training_location", "trainer"],
   examplePayload: {
@@ -69,13 +86,13 @@ const inspectionRecordSpec: SkillFormSpec = {
   skill: "inspection_record",
   displayName: "检查记录",
   fields: [
-    { key: "inspection_subject", label: "检查主题", required: true, kind: "text", placeholder: "例如：消防通道巡检记录" },
-    { key: "inspection_date", label: "检查日期", required: true, kind: "date", help: "格式：YYYY-MM-DD" },
-    { key: "inspector", label: "检查人", required: true, kind: "text", placeholder: "例如：张三" },
-    { key: "department", label: "责任部门", required: false, kind: "text", placeholder: "例如：工程管理部" },
-    { key: "issue_summary", label: "问题概述", required: true, kind: "textarea", placeholder: "描述发现的问题" },
-    { key: "action_required", label: "整改要求", required: false, kind: "textarea", placeholder: "描述整改动作和标准" },
-    { key: "deadline", label: "整改期限", required: false, kind: "text", placeholder: "例如：2026-02-22 18:00" },
+    { key: "inspection_subject", label: "检查主题", templateToken: "INSPECTION_SUBJECT", required: true, kind: "text", placeholder: "例如：消防通道巡检记录" },
+    { key: "inspection_date", label: "检查日期", templateToken: "INSPECTION_DATE", required: true, kind: "date", help: "格式：YYYY-MM-DD" },
+    { key: "inspector", label: "检查人", templateToken: "INSPECTOR", required: true, kind: "text", placeholder: "例如：张三" },
+    { key: "department", label: "责任部门", templateToken: "DEPARTMENT", required: false, kind: "text", placeholder: "例如：工程管理部" },
+    { key: "issue_summary", label: "问题概述", templateToken: "ISSUE_SUMMARY", required: true, kind: "textarea", placeholder: "描述发现的问题" },
+    { key: "action_required", label: "整改要求", templateToken: "ACTION_REQUIRED", required: false, kind: "textarea", placeholder: "描述整改动作和标准" },
+    { key: "deadline", label: "整改期限", templateToken: "DEADLINE", required: false, kind: "text", placeholder: "例如：2026-02-22 18:00" },
   ],
   requiredKeys: ["inspection_subject", "inspection_date", "inspector", "issue_summary"],
   examplePayload: {
@@ -135,4 +152,13 @@ export function defaultFormValues(skill: string): Record<string, string> {
 
 export function allSkillSpecs(): SkillFormSpec[] {
   return [meetingNoticeSpec, trainingNoticeSpec, inspectionRecordSpec];
+}
+
+export function fieldLabelByToken(skill: string, token: string): string | null {
+  const spec = getSkillSpec(skill);
+  if (!spec) {
+    return null;
+  }
+  const field = spec.fields.find((item) => item.templateToken === token);
+  return field ? field.label : null;
 }

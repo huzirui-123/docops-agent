@@ -12,6 +12,7 @@ import {
 import {
   allSkillSpecs,
   defaultFormValues,
+  fieldLabelByToken,
   getSkillSpec,
   skillLabel,
   type SkillFormSpec,
@@ -55,6 +56,26 @@ type ResultState = {
 type ApiHealthState = "checking" | "ok" | "down";
 type ResultTone = "neutral" | "success" | "warning" | "error";
 type InputMode = "form" | "json";
+
+type PrecheckSnapshot = {
+  signature: string;
+  status: number;
+  requestId: string;
+  expectedExitCode: string;
+  ok: boolean | null;
+  templateFields: string[];
+  missingRequired: string[];
+  missingOptional: string[];
+  unsupportedCount: number;
+  templateFieldCount: number;
+  checkedAt: string;
+};
+
+type SelectedTemplateInfo = {
+  name: string;
+  size: number;
+  lastModified: number;
+};
 
 const HISTORY_LIMIT = 10;
 const DEFAULT_SKILL = "meeting_notice";
@@ -250,6 +271,70 @@ function modeLabel(mode: InputMode): string {
   return mode === "form" ? "表单模式（推荐）" : "高级 JSON 模式";
 }
 
+function tokenWithLabel(skill: string, token: string): string {
+  const label = fieldLabelByToken(skill, token);
+  return label ? `${token}（${label}）` : token;
+}
+
+function buildPrecheckSignature(
+  templateFile: { name: string; size: number; lastModified: number },
+  skill: string,
+  taskJson: string,
+  baseUrl: string,
+): string {
+  return [
+    templateFile.name,
+    templateFile.size,
+    templateFile.lastModified,
+    skill,
+    baseUrl,
+    taskJson,
+  ].join("|");
+}
+
+function parsePrecheckSnapshot(
+  response: ApiResult,
+  signature: string,
+): PrecheckSnapshot | null {
+  if (!response.payload || typeof response.payload !== "object") {
+    return null;
+  }
+  const payload = response.payload as Record<string, unknown>;
+  const summary =
+    payload.summary && typeof payload.summary === "object"
+      ? (payload.summary as Record<string, unknown>)
+      : undefined;
+
+  const templateFields = Array.isArray(payload.template_fields)
+    ? payload.template_fields.filter((value): value is string => typeof value === "string")
+    : [];
+  const missingRequired = Array.isArray(payload.missing_required)
+    ? payload.missing_required.filter((value): value is string => typeof value === "string")
+    : [];
+  const missingOptional = Array.isArray(payload.missing_optional)
+    ? payload.missing_optional.filter((value): value is string => typeof value === "string")
+    : [];
+
+  return {
+    signature,
+    status: response.status,
+    requestId: response.requestId,
+    expectedExitCode:
+      "expected_exit_code" in payload ? String(payload.expected_exit_code ?? "-") : "-",
+    ok: "ok" in payload && typeof payload.ok === "boolean" ? payload.ok : null,
+    templateFields,
+    missingRequired,
+    missingOptional,
+    unsupportedCount:
+      summary && typeof summary.unsupported_count === "number" ? summary.unsupported_count : 0,
+    templateFieldCount:
+      summary && typeof summary.template_field_count === "number"
+        ? summary.template_field_count
+        : templateFields.length,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
 export default function App() {
   const [settings, setSettings] = useState<ConsoleSettings>(() => loadSettings(DEFAULT_SETTINGS));
   const [taskTypeSelect, setTaskTypeSelect] = useState<string>("");
@@ -265,9 +350,11 @@ export default function App() {
   const [apiHealth, setApiHealth] = useState<ApiHealthState>("checking");
   const [resultHighlight, setResultHighlight] = useState<boolean>(false);
   const [result, setResult] = useState<ResultState>(DEFAULT_RESULT);
+  const [precheckSnapshot, setPrecheckSnapshot] = useState<PrecheckSnapshot | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
   const [inputMode, setInputMode] = useState<InputMode>("form");
   const [jsonEditable, setJsonEditable] = useState<boolean>(false);
+  const [templateInfo, setTemplateInfo] = useState<SelectedTemplateInfo | null>(null);
   const [formValuesBySkill, setFormValuesBySkill] = useState<Record<string, Record<string, string>>>(() =>
     buildInitialFormValues(),
   );
@@ -285,11 +372,19 @@ export default function App() {
 
   const normalizedBaseUrl = useMemo(() => normalizeApiBaseUrl(settings.apiBaseUrl), [settings.apiBaseUrl]);
   const effectiveBaseUrl = normalizedBaseUrl || window.location.origin;
+  const activeTaskJson = inputMode === "form" ? generatedFromForm.taskJson : settings.taskJson;
   const reproduceCurl = useMemo(
-    () => buildReproduceCurl(settings, inputMode === "form" ? generatedFromForm.taskJson : settings.taskJson, effectiveBaseUrl),
-    [effectiveBaseUrl, generatedFromForm.taskJson, inputMode, settings],
+    () => buildReproduceCurl(settings, activeTaskJson, effectiveBaseUrl),
+    [activeTaskJson, effectiveBaseUrl, settings],
   );
   const resultTone = useMemo(() => getResultTone(result), [result]);
+  const currentPrecheckSignature = templateInfo
+    ? buildPrecheckSignature(templateInfo, settings.skill, activeTaskJson, effectiveBaseUrl)
+    : "";
+  const precheckIsCurrent =
+    Boolean(precheckSnapshot) &&
+    currentPrecheckSignature.length > 0 &&
+    precheckSnapshot?.signature === currentPrecheckSignature;
 
   const jsonConflictMessage = useMemo(() => {
     if (inputMode !== "json" || !jsonEditable || !currentSpec) {
@@ -411,6 +506,29 @@ export default function App() {
     setRunState(`已重置为“${skillLabel(skill)}”官方示例。`);
   };
 
+  const fillRequiredFromExample = (skill: string) => {
+    const spec = getSkillSpec(skill);
+    if (!spec) {
+      return;
+    }
+    const defaults = defaultFormValues(skill);
+    setFormValuesBySkill((prev) => {
+      const current = prev[skill] ?? {};
+      const next: Record<string, string> = { ...current };
+      for (const field of spec.fields) {
+        if (!field.required) {
+          continue;
+        }
+        if ((next[field.key] ?? "").trim().length > 0) {
+          continue;
+        }
+        next[field.key] = defaults[field.key] ?? "";
+      }
+      return { ...prev, [skill]: next };
+    });
+    setRunState("已为必填字段补入示例值。");
+  };
+
   const applyExample = (skill: string) => {
     updateSetting("skill", skill);
     setTaskTypeSelect(skill);
@@ -507,6 +625,19 @@ export default function App() {
     } finally {
       event.target.value = "";
     }
+  };
+
+  const onTemplateFileChanged = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      setTemplateInfo(null);
+      return;
+    }
+    setTemplateInfo({
+      name: file.name,
+      size: file.size,
+      lastModified: file.lastModified,
+    });
   };
 
   const exportTaskJson = () => {
@@ -645,7 +776,32 @@ export default function App() {
       return;
     }
 
-    setRunState("正在运行...");
+    if (precheckIsCurrent && precheckSnapshot && precheckSnapshot.missingRequired.length > 0) {
+      const missingLabels = precheckSnapshot.missingRequired.map((token) =>
+        tokenWithLabel(settings.skill, token),
+      );
+      setResult({
+        status: "blocked",
+        requestId: precheckSnapshot.requestId,
+        durationMs: null,
+        exitCode: precheckSnapshot.expectedExitCode,
+        downloadUrl: "",
+        errorLines: [
+          "已阻止运行：最近一次模板扫描显示存在必填占位符未覆盖。",
+          `missing_required: ${missingLabels.join("、")}`,
+          "请先补齐表单后再次预检。",
+        ],
+        errorJson: "",
+      });
+      setRunState("已阻止：请先补齐必填项并重新预检。");
+      return;
+    }
+
+    if (precheckIsCurrent && precheckSnapshot && precheckSnapshot.unsupportedCount > 0) {
+      setRunState("警告：模板包含不支持占位符，仍将继续运行...");
+    } else {
+      setRunState("正在运行...");
+    }
     const started = performance.now();
 
     try {
@@ -692,6 +848,7 @@ export default function App() {
       });
     } catch (error) {
       const durationMs = Math.round(performance.now() - started);
+      setPrecheckSnapshot(null);
       setResult({
         status: "network",
         requestId: "",
@@ -731,6 +888,17 @@ export default function App() {
       return;
     }
 
+    const signature = buildPrecheckSignature(
+      {
+        name: templateFile.name,
+        size: templateFile.size,
+        lastModified: templateFile.lastModified,
+      },
+      settings.skill,
+      task.taskJson,
+      effectiveBaseUrl,
+    );
+
     setRunState("预检中...");
     const started = performance.now();
 
@@ -745,6 +913,8 @@ export default function App() {
       const payload = apiResult.payload as Record<string, unknown> | null;
       const expectedExitCode =
         payload && "expected_exit_code" in payload ? String(payload.expected_exit_code) : "-";
+      const snapshot = parsePrecheckSnapshot(apiResult, signature);
+      setPrecheckSnapshot(snapshot);
 
       setResult({
         status: String(apiResult.status),
@@ -960,6 +1130,7 @@ export default function App() {
                 className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2"
                 type="file"
                 accept=".docx"
+                onChange={onTemplateFileChanged}
               />
             </label>
 
@@ -1011,6 +1182,64 @@ export default function App() {
                     </label>
                   );
                 })}
+              </div>
+            </div>
+          )}
+
+          {currentSpec && (
+            <div className="mt-4 rounded-md border border-indigo-200 bg-indigo-50 p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-indigo-900">
+                  模板标签向导（{currentSpec.displayName}）
+                </p>
+                <button type="button" className="btn" onClick={() => fillRequiredFromExample(settings.skill)}>
+                  一键补全必填示例
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="min-w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="bg-indigo-100 text-left text-indigo-900">
+                      <th className="border border-indigo-200 px-2 py-1">模板标签</th>
+                      <th className="border border-indigo-200 px-2 py-1">中文字段</th>
+                      <th className="border border-indigo-200 px-2 py-1">当前值</th>
+                      <th className="border border-indigo-200 px-2 py-1">状态</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {currentSpec.fields.map((field) => {
+                      const rawValue = (currentFormValues[field.key] ?? "").trim();
+                      const isFilled = rawValue.length > 0;
+                      const status = isFilled
+                        ? "已填写"
+                        : field.required
+                          ? "必填未填"
+                          : "可选未填";
+                      const statusClass = isFilled
+                        ? "text-emerald-700"
+                        : field.required
+                          ? "text-rose-700"
+                          : "text-amber-700";
+                      return (
+                        <tr key={field.key} className="bg-white">
+                          <td className="border border-indigo-200 px-2 py-1 font-mono">
+                            【{field.templateToken}】
+                          </td>
+                          <td className="border border-indigo-200 px-2 py-1">
+                            {field.label}
+                            {field.required ? <span className="ml-1 text-rose-600">*</span> : null}
+                          </td>
+                          <td className="max-w-sm truncate border border-indigo-200 px-2 py-1 text-slate-700">
+                            {rawValue || "（空）"}
+                          </td>
+                          <td className={`border border-indigo-200 px-2 py-1 font-medium ${statusClass}`}>
+                            {status}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
@@ -1068,12 +1297,80 @@ export default function App() {
             执行与预检
           </h2>
           <p className="mb-3 text-sm text-slate-600">预检不会生成文件，只检查模板和字段是否可用；开始生成会真正返回 ZIP 文件。</p>
+          <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <button className="btn" onClick={precheckClick} type="button">
+                扫描模板占位符（预检）
+              </button>
+              {templateInfo ? (
+                <span className="text-xs text-slate-600">
+                  当前模板：{templateInfo.name}（{Math.max(1, Math.round(templateInfo.size / 1024))} KB）
+                </span>
+              ) : (
+                <span className="text-xs text-amber-700">请先选择模板文件，再执行扫描。</span>
+              )}
+            </div>
+
+            {precheckSnapshot && (
+              <div className="mt-3 space-y-2 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="status-pill-neutral">模板字段：{precheckSnapshot.templateFieldCount}</span>
+                  <span className="status-pill-warning">可选缺失：{precheckSnapshot.missingOptional.length}</span>
+                  <span className="status-pill-error">必填缺失：{precheckSnapshot.missingRequired.length}</span>
+                  <span
+                    className={
+                      precheckSnapshot.unsupportedCount > 0
+                        ? "status-pill-warning"
+                        : "status-pill-success"
+                    }
+                  >
+                    不支持占位符：{precheckSnapshot.unsupportedCount}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600">
+                  最近扫描 request_id：{precheckSnapshot.requestId || "-"}，expected_exit_code：
+                  {precheckSnapshot.expectedExitCode}
+                  {precheckIsCurrent ? "（与当前输入一致）" : "（已过期，请重新扫描）"}
+                </p>
+
+                {precheckSnapshot.missingRequired.length > 0 && (
+                  <p className="rounded-md bg-rose-50 px-3 py-2 text-rose-700">
+                    必填占位符缺失：
+                    {precheckSnapshot.missingRequired
+                      .map((token) => tokenWithLabel(settings.skill, token))
+                      .join("、")}
+                  </p>
+                )}
+                {precheckSnapshot.unsupportedCount > 0 && (
+                  <p className="rounded-md bg-amber-50 px-3 py-2 text-amber-700">
+                    模板包含不支持占位符（{precheckSnapshot.unsupportedCount} 个）。系统会继续运行，但可能产生
+                    `exit_code=3`，建议先修模板。
+                  </p>
+                )}
+
+                {precheckSnapshot.templateFields.length > 0 && (
+                  <details className="rounded-md border border-slate-200 bg-white p-2">
+                    <summary className="cursor-pointer text-xs font-medium text-slate-700">
+                      查看模板中识别到的占位符（{precheckSnapshot.templateFields.length}）
+                    </summary>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {precheckSnapshot.templateFields.map((token) => (
+                        <span key={token} className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-700">
+                          {tokenWithLabel(settings.skill, token)}
+                        </span>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </div>
+            )}
+          </div>
           <div className="flex flex-wrap items-center gap-3">
             <button className="btn-primary-lg" onClick={runClick} type="button">
               开始生成
             </button>
             <button className="btn-lg" onClick={precheckClick} type="button">
-              先做预检
+              刷新预检结果
             </button>
             <span className="text-sm text-slate-600">{runState}</span>
           </div>
