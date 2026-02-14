@@ -21,7 +21,10 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast, get_args, get_origin
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 
 from docx import Document
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -51,6 +54,8 @@ _DEFAULT_TIMEOUT_SECONDS = 60.0
 _DEFAULT_MAX_CONCURRENCY = 2
 _DEFAULT_QUEUE_TIMEOUT_SECONDS = 0.0
 _DEFAULT_CORS_MAX_AGE_SECONDS = 600
+_DEFAULT_ASSIST_TIMEOUT_SECONDS = 60.0
+_DEFAULT_ASSIST_PROMPT_MAX_CHARS = 4000
 _BASIC_AUTH_REALM = "docops"
 
 _PRESET_TO_FORMAT: dict[PresetMode, tuple[FormatMode, FormatBaseline, FormatFixMode]] = {
@@ -231,6 +236,7 @@ async def meta_v1(request: Request) -> JSONResponse:
         "supported_presets": list(_PRESET_TO_FORMAT),
         "task_payload_schemas": _task_payload_summaries(),
         "supports_precheck": True,
+        "supports_assist": _assist_enabled(),
         "version": app.version,
     }
     return JSONResponse(
@@ -325,6 +331,106 @@ async def precheck_v1(
         )
     finally:
         _safe_remove_dir(tmp_dir)
+
+
+@app.post("/v1/assist", response_model=None)
+async def assist_v1(request: Request) -> JSONResponse:
+    """Optional local LLM assistant endpoint for writing suggestions."""
+
+    request_id = _request_id_from_request(request)
+    if not _assist_enabled():
+        return _error_response(
+            status_code=404,
+            error_code="NOT_FOUND",
+            message="assist endpoint is disabled",
+            request_id=request_id,
+            detail={"path": request.url.path},
+        )
+
+    try:
+        raw_body = await request.json()
+    except json.JSONDecodeError as exc:
+        return _error_response(
+            status_code=400,
+            error_code="INVALID_JSON",
+            message="request body must be valid JSON",
+            request_id=request_id,
+            detail={"field": "body", "error": str(exc)},
+        )
+
+    if not isinstance(raw_body, dict):
+        return _error_response(
+            status_code=400,
+            error_code="INVALID_JSON",
+            message="request JSON must be an object",
+            request_id=request_id,
+            detail={"field": "body"},
+        )
+
+    try:
+        prompt, skill_name, task_payload, template_fields = _parse_assist_request(raw_body)
+        if skill_name is not None:
+            _resolve_skill(skill_name)
+
+        task_type = task_payload.get("task_type") if task_payload is not None else None
+        if skill_name is not None and isinstance(task_type, str) and skill_name != task_type:
+            raise ApiRequestError(
+                status_code=400,
+                error_code="INVALID_ARGUMENT_CONFLICT",
+                message="skill and task.task_type must match",
+                detail={"field": "skill", "skill": skill_name, "task_type": task_type},
+            )
+
+        rendered_prompt = _build_assist_prompt(
+            prompt=prompt,
+            skill_name=skill_name,
+            task_payload=task_payload,
+            template_fields=template_fields,
+        )
+        raw_response = _call_ollama_generate(prompt=rendered_prompt)
+        answer = raw_response.get("response")
+        if not isinstance(answer, str) or not answer.strip():
+            raise ApiRequestError(
+                status_code=502,
+                error_code="UPSTREAM_BAD_RESPONSE",
+                message="ollama response missing generated text",
+                detail={"field": "response"},
+            )
+
+        usage: dict[str, int] = {}
+        for key in ("prompt_eval_count", "eval_count", "total_duration", "load_duration"):
+            value = raw_response.get(key)
+            if isinstance(value, int):
+                usage[key] = value
+
+        model_name = raw_response.get("model")
+        return JSONResponse(
+            status_code=200,
+            headers={"X-Docops-Request-Id": request_id},
+            content={
+                "ok": True,
+                "request_id": request_id,
+                "model": model_name if isinstance(model_name, str) else _ollama_model(),
+                "answer": answer,
+                "usage": usage,
+            },
+        )
+    except ApiRequestError as exc:
+        return _error_response(
+            status_code=exc.status_code,
+            error_code=exc.error_code,
+            message=exc.message,
+            request_id=request_id,
+            detail=exc.detail,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error_response(
+            status_code=500,
+            error_code="INTERNAL_ERROR",
+            message="internal server error",
+            request_id=request_id,
+            detail={"error": str(exc)},
+        )
 
 
 @app.get("/web", response_model=None)
@@ -1036,6 +1142,40 @@ def _meta_enabled() -> bool:
     return raw not in {"0", "false", "off", "no"}
 
 
+def _assist_enabled() -> bool:
+    return _env_bool("DOCOPS_ENABLE_ASSIST", "1")
+
+
+def _assist_prompt_max_chars() -> int:
+    raw = os.getenv("DOCOPS_ASSIST_MAX_PROMPT_CHARS", str(_DEFAULT_ASSIST_PROMPT_MAX_CHARS)).strip()
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return _DEFAULT_ASSIST_PROMPT_MAX_CHARS
+    return parsed if parsed > 0 else _DEFAULT_ASSIST_PROMPT_MAX_CHARS
+
+
+def _assist_timeout_seconds() -> float:
+    raw = os.getenv("DOCOPS_ASSIST_TIMEOUT_SECONDS", str(_DEFAULT_ASSIST_TIMEOUT_SECONDS)).strip()
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return _DEFAULT_ASSIST_TIMEOUT_SECONDS
+    return parsed if parsed > 0 else _DEFAULT_ASSIST_TIMEOUT_SECONDS
+
+
+def _ollama_base_url() -> str:
+    raw = os.getenv("DOCOPS_OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip()
+    if not raw:
+        return "http://127.0.0.1:11434"
+    return raw.rstrip("/")
+
+
+def _ollama_model() -> str:
+    raw = os.getenv("DOCOPS_OLLAMA_MODEL", "qwen3:8b").strip()
+    return raw or "qwen3:8b"
+
+
 def _apply_web_headers(response: Response, request_id: str) -> Response:
     response.headers.update(_web_security_headers())
     response.headers.setdefault("X-Docops-Request-Id", request_id)
@@ -1291,6 +1431,175 @@ def _compute_precheck_missing_fields(
         (missing_in_template & optional) | (missing_in_template - (required | optional))
     )
     return missing_required, missing_optional
+
+
+def _parse_assist_request(
+    body: dict[str, Any],
+) -> tuple[str, str | None, dict[str, Any] | None, list[str]]:
+    prompt_raw = body.get("prompt")
+    if not isinstance(prompt_raw, str):
+        raise ApiRequestError(
+            status_code=400,
+            error_code="INVALID_ARGUMENT",
+            message="prompt must be a string",
+            detail={"field": "prompt"},
+        )
+    prompt = prompt_raw.strip()
+    if not prompt:
+        raise ApiRequestError(
+            status_code=400,
+            error_code="INVALID_ARGUMENT",
+            message="prompt must not be empty",
+            detail={"field": "prompt"},
+        )
+    if len(prompt) > _assist_prompt_max_chars():
+        raise ApiRequestError(
+            status_code=400,
+            error_code="INVALID_ARGUMENT",
+            message="prompt is too long",
+            detail={
+                "field": "prompt",
+                "max_chars": _assist_prompt_max_chars(),
+                "received_chars": len(prompt),
+            },
+        )
+
+    skill_name: str | None = None
+    skill_raw = body.get("skill")
+    if skill_raw is not None:
+        if not isinstance(skill_raw, str):
+            raise ApiRequestError(
+                status_code=400,
+                error_code="INVALID_ARGUMENT",
+                message="skill must be a string",
+                detail={"field": "skill"},
+            )
+        normalized_skill = skill_raw.strip()
+        if normalized_skill:
+            skill_name = normalized_skill
+
+    task_payload: dict[str, Any] | None = None
+    task_raw = body.get("task")
+    if task_raw is not None:
+        if not isinstance(task_raw, dict):
+            raise ApiRequestError(
+                status_code=400,
+                error_code="INVALID_ARGUMENT",
+                message="task must be an object when provided",
+                detail={"field": "task"},
+            )
+        task_payload = task_raw
+
+    template_fields: list[str] = []
+    template_fields_raw = body.get("template_fields")
+    if template_fields_raw is not None:
+        if not isinstance(template_fields_raw, list):
+            raise ApiRequestError(
+                status_code=400,
+                error_code="INVALID_ARGUMENT",
+                message="template_fields must be a string array",
+                detail={"field": "template_fields"},
+            )
+        for value in template_fields_raw:
+            if isinstance(value, str) and value.strip():
+                template_fields.append(value.strip())
+
+    return prompt, skill_name, task_payload, template_fields
+
+
+def _build_assist_prompt(
+    *,
+    prompt: str,
+    skill_name: str | None,
+    task_payload: dict[str, Any] | None,
+    template_fields: list[str],
+) -> str:
+    context_lines = [
+        "你是 DocOps 的中文文书助手。请给出简洁、可执行的建议，优先面向非技术用户。",
+        "回答要求：最多 5 条，按编号列出，每条尽量具体。",
+    ]
+    if skill_name is not None:
+        context_lines.append(f"当前 skill: {skill_name}")
+    if template_fields:
+        context_lines.append(
+            f"模板占位符: {', '.join(template_fields[:40])}"
+        )
+    if task_payload is not None:
+        context_lines.append(
+            "当前 task: " + json.dumps(task_payload, ensure_ascii=False, sort_keys=True)
+        )
+    context_lines.append(f"用户问题: {prompt}")
+    return "\n".join(context_lines)
+
+
+def _call_ollama_generate(*, prompt: str) -> dict[str, Any]:
+    url = f"{_ollama_base_url()}/api/generate"
+    payload = {
+        "model": _ollama_model(),
+        "prompt": prompt,
+        "stream": False,
+    }
+    request = UrlRequest(
+        url=url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=_assist_timeout_seconds()) as response:
+            raw = response.read()
+    except HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            body = ""
+        raise ApiRequestError(
+            status_code=502,
+            error_code="UPSTREAM_ERROR",
+            message="ollama upstream returned HTTP error",
+            detail={"url": url, "status_code": exc.code, "body": body[:500]},
+        ) from exc
+    except TimeoutError as exc:
+        raise ApiRequestError(
+            status_code=504,
+            error_code="UPSTREAM_TIMEOUT",
+            message="ollama upstream timed out",
+            detail={"url": url, "timeout_seconds": _assist_timeout_seconds()},
+        ) from exc
+    except URLError as exc:
+        raise ApiRequestError(
+            status_code=503,
+            error_code="UPSTREAM_UNAVAILABLE",
+            message="ollama upstream is unavailable",
+            detail={"url": url, "reason": str(exc.reason)},
+        ) from exc
+    except OSError as exc:
+        raise ApiRequestError(
+            status_code=503,
+            error_code="UPSTREAM_UNAVAILABLE",
+            message="ollama upstream is unavailable",
+            detail={"url": url, "reason": str(exc)},
+        ) from exc
+
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ApiRequestError(
+            status_code=502,
+            error_code="UPSTREAM_BAD_RESPONSE",
+            message="ollama response is not valid JSON",
+            detail={"url": url, "error": str(exc)},
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ApiRequestError(
+            status_code=502,
+            error_code="UPSTREAM_BAD_RESPONSE",
+            message="ollama response must be a JSON object",
+            detail={"url": url},
+        )
+    return parsed
 
 
 def _load_policy_with_api_error(policy_path: Path | None):

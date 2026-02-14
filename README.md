@@ -128,6 +128,13 @@ curl -sS -X POST "http://127.0.0.1:8000/v1/precheck" \
   -F "skill=meeting_notice"
 ```
 
+可选 AI 助手（本地模型，不影响 `/v1/run`）：
+```bash
+curl -sS -X POST "http://127.0.0.1:8000/v1/assist" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"请给我3条会议通知写作建议","skill":"meeting_notice"}'
+```
+
 内置 Web 控制台（默认关闭，需显式开启）：
 `http://127.0.0.1:8000/web`
 
@@ -155,8 +162,9 @@ API 返回说明：
 `200` 返回 zip，响应头 `X-Docops-Exit-Code` 表示执行结果（`0/2/3/4`）。
 所有响应都包含 `X-Docops-Request-Id`（可用于排障关联）。
 `/v1/meta` 返回 `supported_skills`、`supported_task_types`、`supported_presets`、`task_payload_schemas`，前端应以该接口为准，不应硬编码。
-`/v1/meta` 额外返回 `supports_precheck`，用于前端能力探测。
+`/v1/meta` 额外返回 `supports_precheck`、`supports_assist`，用于前端能力探测。
 `/v1/precheck` 返回 JSON 诊断（`expected_exit_code=0/2/3`），不写文件、不返回 zip。
+`/v1/assist` 返回本地模型建议（JSON），不会改变 `run` 的业务语义。
 `strict` 格式失败时仍返回 zip（`X-Docops-Exit-Code: 4`）。
 `skill` 参数当前支持：`meeting_notice`、`training_notice`、`inspection_record`。
 传入不支持 skill 会返回 `400`，并在 `detail.supported_skills` 给出可用列表。
@@ -199,6 +207,11 @@ Web 控制台加固与可复现能力（`/web` 与 `/web/static/*` 同 gate/Basi
 可选 CORS（默认关闭）：
 `DOCOPS_ENABLE_CORS=1`
 `DOCOPS_CORS_ALLOW_ORIGINS="http://localhost:5173,http://127.0.0.1:5173"`
+可选本地模型参数：
+`DOCOPS_ENABLE_ASSIST=1`（默认开启）
+`DOCOPS_OLLAMA_BASE_URL="http://127.0.0.1:11434"`
+`DOCOPS_OLLAMA_MODEL="qwen3:8b"`
+`DOCOPS_ASSIST_TIMEOUT_SECONDS=60`
 详细部署说明见：`docs/DEPLOYMENT.md`
 
 本地压测（需先启动真实服务，不使用 ASGITransport）：

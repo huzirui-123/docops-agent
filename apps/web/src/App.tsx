@@ -1,6 +1,7 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  assistDocOps,
   apiUrl,
   defaultApiBaseUrl,
   loadMeta,
@@ -53,6 +54,15 @@ type ResultState = {
   errorJson: string;
 };
 
+type AssistState = {
+  status: string;
+  requestId: string;
+  model: string;
+  answer: string;
+  errorLines: string[];
+  errorJson: string;
+};
+
 type ApiHealthState = "checking" | "ok" | "down";
 type ResultTone = "neutral" | "success" | "warning" | "error";
 type InputMode = "form" | "json";
@@ -98,6 +108,15 @@ const DEFAULT_RESULT: ResultState = {
   durationMs: null,
   exitCode: "-",
   downloadUrl: "",
+  errorLines: [],
+  errorJson: "",
+};
+
+const DEFAULT_ASSIST: AssistState = {
+  status: "-",
+  requestId: "",
+  model: "",
+  answer: "",
   errorLines: [],
   errorJson: "",
 };
@@ -350,6 +369,10 @@ export default function App() {
   const [apiHealth, setApiHealth] = useState<ApiHealthState>("checking");
   const [resultHighlight, setResultHighlight] = useState<boolean>(false);
   const [result, setResult] = useState<ResultState>(DEFAULT_RESULT);
+  const [assistPrompt, setAssistPrompt] = useState<string>(
+    "请基于当前任务内容，给我 3 条可执行的文书优化建议。",
+  );
+  const [assistState, setAssistState] = useState<AssistState>(DEFAULT_ASSIST);
   const [precheckSnapshot, setPrecheckSnapshot] = useState<PrecheckSnapshot | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
   const [inputMode, setInputMode] = useState<InputMode>("form");
@@ -714,6 +737,18 @@ export default function App() {
     }
   };
 
+  const copyAssistAnswer = async () => {
+    if (!assistState.answer.trim()) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(assistState.answer);
+      setRunState("AI 建议已复制");
+    } catch (error) {
+      setRunState(`复制失败：${String(error)}`);
+    }
+  };
+
   const appendHistory = (entry: HistoryEntry) => {
     setHistory((prev) => [entry, ...prev].slice(0, HISTORY_LIMIT));
   };
@@ -958,6 +993,71 @@ export default function App() {
         durationMs,
         baseUrl: settings.apiBaseUrl,
       });
+    }
+  };
+
+  const assistClick = async () => {
+    const trimmedPrompt = assistPrompt.trim();
+    if (trimmedPrompt.length === 0) {
+      setRunState("请先输入你的问题，再请求 AI 建议。");
+      return;
+    }
+
+    const task = buildSubmissionTask();
+    if (!task.ok) {
+      setRunState(task.message);
+      return;
+    }
+
+    setRunState("AI 分析中...");
+    setAssistState(DEFAULT_ASSIST);
+    try {
+      const apiResult = await assistDocOps({
+        baseUrl: settings.apiBaseUrl,
+        prompt: trimmedPrompt,
+        skill: settings.skill,
+        taskJson: task.taskJson,
+        templateFields: precheckSnapshot?.templateFields ?? [],
+      });
+
+      if (apiResult.status === 200 && apiResult.payload && typeof apiResult.payload === "object") {
+        const payload = apiResult.payload as Record<string, unknown>;
+        setAssistState({
+          status: String(apiResult.status),
+          requestId: apiResult.requestId,
+          model: typeof payload.model === "string" ? payload.model : "",
+          answer: typeof payload.answer === "string" ? payload.answer : "",
+          errorLines: [],
+          errorJson: JSON.stringify(payload, null, 2),
+        });
+        setRunState("AI 建议已生成");
+        return;
+      }
+
+      setAssistState({
+        status: String(apiResult.status),
+        requestId: apiResult.requestId,
+        model: "",
+        answer: "",
+        errorLines: labelErrorPayload(apiResult.payload),
+        errorJson: apiResult.payload
+          ? JSON.stringify(apiResult.payload, null, 2)
+          : "(empty response body)",
+      });
+      setRunState("AI 建议请求失败");
+    } catch (error) {
+      setAssistState({
+        status: "network",
+        requestId: "",
+        model: "",
+        answer: "",
+        errorLines: [
+          `network_error: ${String(error)}`,
+          "请确认本地 Ollama 可访问（例如 DOCOPS_OLLAMA_BASE_URL=http://172.29.160.1:11434）。",
+        ],
+        errorJson: "",
+      });
+      setRunState("AI 建议请求在收到响应前失败");
     }
   };
 
@@ -1376,12 +1476,71 @@ export default function App() {
           </div>
         </section>
 
+        <section className="step-card">
+          <h2 className="mb-2 text-lg font-semibold text-slate-900">
+            <span className="step-chip mr-2">步骤 4</span>
+            AI 助手（本地模型）
+          </h2>
+          <p className="mb-3 text-sm text-slate-600">
+            这个功能不会改变生成流程，只提供写作建议和问题解释。你可以先预检，再让 AI 给出改进建议。
+          </p>
+          <label className="block text-sm text-slate-700">
+            你的问题
+            <textarea
+              className="mt-1 h-24 w-full rounded-md border border-slate-300 px-3 py-2"
+              value={assistPrompt}
+              onChange={(event) => setAssistPrompt(event.target.value)}
+              placeholder="例如：请检查我的会议通知是否还缺少关键信息，并给出3条改进建议"
+            />
+          </label>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button className="btn" type="button" onClick={assistClick}>
+              获取 AI 建议
+            </button>
+            <button className="btn" type="button" onClick={copyAssistAnswer}>
+              复制 AI 回答
+            </button>
+            <span className="text-xs text-slate-500">
+              建议先完成模板扫描，AI 会结合当前 skill 与任务 JSON 分析。
+            </span>
+          </div>
+
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <div>
+              <p className="label">状态</p>
+              <p className="value">{assistState.status}</p>
+            </div>
+            <div>
+              <p className="label">请求 ID</p>
+              <p className="value">{assistState.requestId || "-"}</p>
+            </div>
+            <div>
+              <p className="label">模型</p>
+              <p className="value">{assistState.model || "-"}</p>
+            </div>
+          </div>
+
+          {assistState.answer && (
+            <div className="mt-3 rounded-md bg-emerald-50 p-3 text-sm text-emerald-800">
+              <p className="mb-1 font-medium">AI 建议</p>
+              <pre className="whitespace-pre-wrap">{assistState.answer}</pre>
+            </div>
+          )}
+          {assistState.errorLines.length > 0 && (
+            <div className="mt-3 rounded-md bg-rose-50 p-3 text-rose-800">
+              <p className="font-medium">AI 请求错误</p>
+              <pre className="pre">{assistState.errorLines.join("\n")}</pre>
+              <pre className="pre">{assistState.errorJson}</pre>
+            </div>
+          )}
+        </section>
+
         <section
           id="result-block"
           className={`step-card transition ${resultHighlight ? "ring-2 ring-indigo-400 ring-offset-2" : ""}`}
         >
           <div className="mb-2 flex items-center justify-between gap-2">
-            <h2 className="text-lg font-semibold text-slate-900">D. 执行结果</h2>
+            <h2 className="text-lg font-semibold text-slate-900">步骤 5：执行结果</h2>
             <span
               className={
                 resultTone === "success"
@@ -1459,7 +1618,7 @@ export default function App() {
         </section>
 
         <section className="step-card">
-          <h2 className="mb-2 text-lg font-semibold text-slate-900">E. 最近请求记录</h2>
+          <h2 className="mb-2 text-lg font-semibold text-slate-900">步骤 6：最近请求记录</h2>
           {history.length === 0 ? (
             <p className="text-sm text-slate-600">暂无最近请求记录。</p>
           ) : (

@@ -16,6 +16,14 @@ export type PrecheckRequest = {
   skill: string;
 };
 
+export type AssistRequest = {
+  baseUrl: string;
+  prompt: string;
+  skill: string;
+  taskJson: string;
+  templateFields: string[];
+};
+
 export type ApiResult = {
   status: number;
   requestId: string;
@@ -122,6 +130,46 @@ export async function precheckDocOps(request: PrecheckRequest): Promise<ApiResul
   const response = await fetch(buildUrl(request.baseUrl, "/v1/precheck"), {
     method: "POST",
     body: formData,
+  });
+
+  const contentType = response.headers.get("content-type") ?? "";
+  const requestId = response.headers.get("X-Docops-Request-Id") ?? "";
+  const exitCode = response.headers.get("X-Docops-Exit-Code") ?? "";
+
+  let payload: unknown | null = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  return {
+    status: response.status,
+    requestId,
+    exitCode,
+    contentType,
+    payload,
+    blob: null,
+  };
+}
+
+export async function assistDocOps(request: AssistRequest): Promise<ApiResult> {
+  let taskPayload: unknown = null;
+  try {
+    taskPayload = JSON.parse(request.taskJson);
+  } catch {
+    taskPayload = null;
+  }
+
+  const response = await fetch(buildUrl(request.baseUrl, "/v1/assist"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prompt: request.prompt,
+      skill: request.skill,
+      task: taskPayload,
+      template_fields: request.templateFields,
+    }),
   });
 
   const contentType = response.headers.get("content-type") ?? "";
