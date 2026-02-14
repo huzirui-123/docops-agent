@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, cast, get_args, get_origin
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib.request import ProxyHandler, build_opener, urlopen
 from urllib.request import Request as UrlRequest
-from urllib.request import urlopen
 
 from docx import Document
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -1176,6 +1176,10 @@ def _ollama_model() -> str:
     return raw or "qwen3:8b"
 
 
+def _ollama_use_proxy() -> bool:
+    return _env_bool("DOCOPS_OLLAMA_USE_PROXY", "0")
+
+
 def _apply_web_headers(response: Response, request_id: str) -> Response:
     response.headers.update(_web_security_headers())
     response.headers.setdefault("X-Docops-Request-Id", request_id)
@@ -1547,8 +1551,15 @@ def _call_ollama_generate(*, prompt: str) -> dict[str, Any]:
     )
 
     try:
-        with urlopen(request, timeout=_assist_timeout_seconds()) as response:
-            raw = response.read()
+        timeout_seconds = _assist_timeout_seconds()
+        if _ollama_use_proxy():
+            with urlopen(request, timeout=timeout_seconds) as response:
+                raw = response.read()
+        else:
+            # Local Ollama access should bypass global proxy by default.
+            opener = build_opener(ProxyHandler({}))
+            with opener.open(request, timeout=timeout_seconds) as response:
+                raw = response.read()
     except HTTPError as exc:
         body = ""
         try:

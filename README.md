@@ -212,6 +212,7 @@ Web 控制台加固与可复现能力（`/web` 与 `/web/static/*` 同 gate/Basi
 `DOCOPS_OLLAMA_BASE_URL="http://127.0.0.1:11434"`
 `DOCOPS_OLLAMA_MODEL="qwen3:8b"`
 `DOCOPS_ASSIST_TIMEOUT_SECONDS=60`
+`DOCOPS_OLLAMA_USE_PROXY=0`（默认不走代理，避免本地 Ollama 被代理劫持）
 详细部署说明见：`docs/DEPLOYMENT.md`
 
 本地压测（需先启动真实服务，不使用 ASGITransport）：
