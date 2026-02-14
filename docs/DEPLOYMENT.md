@@ -7,6 +7,38 @@
 poetry run uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
 ```
 
+### Local One-Click Scripts
+
+Use the built-in scripts for local daily usage:
+
+```bash
+bash scripts/start_local.sh
+bash scripts/check_local.sh
+bash scripts/stop_local.sh
+```
+
+What `start_local.sh` does:
+
+- starts API in background and writes pid/log under `artifacts/local_runtime/`
+- defaults to `DOCOPS_LOCAL_PORT=8000` (override as needed)
+- enables local-friendly toggles:
+  - `DOCOPS_ENABLE_WEB_CONSOLE=1`
+  - `DOCOPS_ENABLE_META=1`
+  - `DOCOPS_ENABLE_ASSIST=1`
+- sets `DOCOPS_OLLAMA_BASE_URL` automatically:
+  - WSL: `http://<default_gateway>:11434`
+  - others: `http://127.0.0.1:11434`
+- appends local/Ollama host into `NO_PROXY/no_proxy` to reduce proxy interference.
+
+Examples:
+
+```bash
+DOCOPS_LOCAL_PORT=18000 bash scripts/start_local.sh
+DOCOPS_CHECK_ASSIST=0 bash scripts/check_local.sh
+DOCOPS_OLLAMA_BASE_URL=http://172.29.160.1:11434 bash scripts/start_local.sh
+DOCOPS_SKIP_HEALTH_WAIT=1 bash scripts/start_local.sh
+```
+
 ### Production
 ```bash
 poetry run gunicorn -k uvicorn.workers.UvicornWorker -w 2 apps.api.main:app

@@ -9,6 +9,14 @@ Document Ops Agent MVP（无 LLM）。
 1. 安装依赖：`poetry install`
 2. 质量门禁：`poetry run ruff check .`、`poetry run mypy .`、`poetry run pytest`
 
+本地一键启停（推荐）：
+`bash scripts/start_local.sh`
+`bash scripts/check_local.sh`
+`bash scripts/stop_local.sh`
+
+可覆盖端口：
+`DOCOPS_LOCAL_PORT=18000 bash scripts/start_local.sh`
+
 ## 部署
 部署与运行形态说明见：`docs/DEPLOYMENT.md`
 
