@@ -13,3 +13,4 @@ apps/web/dist/
 out_*/
 demo_*.json
 demo_*.docx
+artifacts/
