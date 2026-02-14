@@ -38,6 +38,7 @@ type ResultState = {
 };
 
 type ApiHealthState = "checking" | "ok" | "down";
+type ResultTone = "neutral" | "success" | "warning" | "error";
 
 const HISTORY_LIMIT = 10;
 
@@ -45,7 +46,12 @@ const DEFAULT_TASK_JSON = JSON.stringify(
   {
     task_type: "meeting_notice",
     payload: {
-      meeting_title: "Weekly Meeting",
+      meeting_title: "XX 项目安全例会（演示）",
+      meeting_date: "2026-02-20",
+      meeting_time: "14:00-15:30",
+      meeting_location: "会议室 B（2F）",
+      organizer: "工程管理部",
+      attendees: ["张三", "李四", "王五", "赵六"],
     },
   },
   null,
@@ -72,23 +78,61 @@ const DEFAULT_RESULT: ResultState = {
   errorJson: "",
 };
 
+const EXAMPLE_TASKS: Record<string, Record<string, unknown>> = {
+  meeting_notice: {
+    task_type: "meeting_notice",
+    payload: {
+      meeting_title: "XX 项目安全例会（演示）",
+      meeting_date: "2026-02-20",
+      meeting_time: "14:00-15:30",
+      meeting_location: "会议室 B（2F）",
+      organizer: "工程管理部",
+      attendees: ["张三", "李四", "王五", "赵六"],
+    },
+  },
+  training_notice: {
+    task_type: "training_notice",
+    payload: {
+      training_title: "消防安全培训通知",
+      training_date: "2026-02-21",
+      training_time: "09:30-11:00",
+      training_location: "一楼报告厅",
+      trainer: "王老师",
+      organizer: "人事部",
+      attendees: ["生产部", "工程部", "行政部"],
+    },
+  },
+  inspection_record: {
+    task_type: "inspection_record",
+    payload: {
+      inspection_subject: "消防通道巡检记录",
+      inspection_date: "2026-02-22",
+      inspector: "张三",
+      department: "工程管理部",
+      issue_summary: "2号楼通道堆放杂物，存在阻塞风险",
+      action_required: "当日18:00前完成清理并拍照回传",
+      deadline: "2026-02-22 18:00",
+    },
+  },
+};
+
 function safeParseTask(taskJson: string):
   | { ok: true; value: Record<string, unknown> }
   | { ok: false; message: string } {
   try {
     const parsed = JSON.parse(taskJson);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { ok: false, message: "task JSON must be an object" };
+      return { ok: false, message: "task JSON 必须是对象（object）" };
     }
     return { ok: true, value: parsed as Record<string, unknown> };
   } catch (error) {
-    return { ok: false, message: `task JSON parse error: ${String(error)}` };
+    return { ok: false, message: `task JSON 解析失败：${String(error)}` };
   }
 }
 
 function labelErrorPayload(payload: unknown): string[] {
   if (!payload || typeof payload !== "object") {
-    return ["error: non-JSON error response"];
+    return ["错误：返回内容不是 JSON"];
   }
 
   const dict = payload as Record<string, unknown>;
@@ -102,14 +146,14 @@ function labelErrorPayload(payload: unknown): string[] {
     lines.push(`detail: ${JSON.stringify(dict.detail)}`);
   }
   if (lines.length === 0) {
-    lines.push("error: response JSON has no known fields");
+    lines.push("错误：返回 JSON 中没有可识别字段");
   }
   return lines;
 }
 
 function labelPrecheckPayload(payload: unknown): string[] {
   if (!payload || typeof payload !== "object") {
-    return ["precheck: non-JSON payload"];
+    return ["预检：返回内容不是 JSON"];
   }
   const dict = payload as Record<string, unknown>;
   const summary =
@@ -142,15 +186,15 @@ function labelPrecheckPayload(payload: unknown): string[] {
     lines.push(`missing_optional: ${JSON.stringify(dict.missing_optional)}`);
   }
   if (lines.length === 0) {
-    lines.push("precheck: payload has no known fields");
+    lines.push("预检：返回 JSON 中没有可识别字段");
   }
   return lines;
 }
 
 function buildReproduceCurl(settings: ConsoleSettings, baseUrl: string): string {
   const policyHint = settings.policyYaml.trim()
-    ? "# Add -F policy_yaml='...' if needed"
-    : "# policy_yaml omitted";
+    ? "# 如需策略文本可追加 -F policy_yaml='...'"
+    : "# 当前未包含 policy_yaml";
 
   const taskBody = settings.taskJson.trim() || "{}";
 
@@ -173,6 +217,63 @@ function buildReproduceCurl(settings: ConsoleSettings, baseUrl: string): string 
   ].join("\n");
 }
 
+function explainExitCode(exitCode: string): string {
+  if (exitCode === "0") {
+    return "解释：执行成功，已生成结果文档。";
+  }
+  if (exitCode === "2") {
+    return "解释：缺少必填字段，请先补齐 missing_required 再运行。";
+  }
+  if (exitCode === "3") {
+    return "解释：模板中有不支持占位符，建议先调整模板或字段映射。";
+  }
+  if (exitCode === "4") {
+    return "解释：严格模式下格式校验失败，请查看格式报告。";
+  }
+  if (exitCode === "-" || exitCode.length === 0) {
+    return "解释：当前没有可用的 exit_code。";
+  }
+  return "解释：收到其他退出码，请结合下方错误详情排查。";
+}
+
+function getResultTone(result: ResultState): ResultTone {
+  if (result.status === "network") {
+    return "error";
+  }
+
+  const statusCode = Number(result.status);
+  if (Number.isFinite(statusCode) && statusCode >= 400) {
+    return "error";
+  }
+
+  if (result.exitCode === "0" && result.downloadUrl) {
+    return "success";
+  }
+
+  if (result.exitCode === "2" || result.exitCode === "3" || result.exitCode === "4") {
+    return "warning";
+  }
+
+  if (result.errorLines.length > 0) {
+    return "warning";
+  }
+
+  return "neutral";
+}
+
+function resultToneLabel(tone: ResultTone): string {
+  if (tone === "success") {
+    return "成功";
+  }
+  if (tone === "warning") {
+    return "需处理";
+  }
+  if (tone === "error") {
+    return "失败";
+  }
+  return "等待结果";
+}
+
 export default function App() {
   const [settings, setSettings] = useState<ConsoleSettings>(() => loadSettings(DEFAULT_SETTINGS));
   const [taskTypeSelect, setTaskTypeSelect] = useState<string>("");
@@ -181,10 +282,10 @@ export default function App() {
     skills: ["meeting_notice"],
     presets: ["quick", "template", "strict"],
     taskTypes: ["meeting_notice"],
-    message: "Meta not loaded.",
+    message: "尚未加载元数据。",
     warning: "",
   });
-  const [runState, setRunState] = useState<string>("Idle");
+  const [runState, setRunState] = useState<string>("空闲");
   const [apiHealth, setApiHealth] = useState<ApiHealthState>("checking");
   const [resultHighlight, setResultHighlight] = useState<boolean>(false);
   const [result, setResult] = useState<ResultState>(DEFAULT_RESULT);
@@ -197,6 +298,7 @@ export default function App() {
     () => buildReproduceCurl(settings, effectiveBaseUrl),
     [settings, effectiveBaseUrl],
   );
+  const resultTone = useMemo(() => getResultTone(result), [result]);
 
   useEffect(() => {
     if (persistTimer.current !== null) {
@@ -244,17 +346,28 @@ export default function App() {
     setSettings((prev) => ({ ...prev, [key]: value }));
   };
 
+  const applyExample = (skill: string) => {
+    const example = EXAMPLE_TASKS[skill];
+    if (!example) {
+      return;
+    }
+    updateSetting("skill", skill);
+    setTaskTypeSelect(skill);
+    updateSetting("taskJson", JSON.stringify(example, null, 2));
+    setRunState(`已填入 ${skill} 示例，请上传模板后先预检再运行。`);
+  };
+
   const loadMetaClick = async () => {
-    setMeta((prev) => ({ ...prev, status: "loading", message: "Loading /v1/meta ...", warning: "" }));
+    setMeta((prev) => ({ ...prev, status: "loading", message: "正在加载 /v1/meta ...", warning: "" }));
     try {
       const response = await loadMeta(settings.apiBaseUrl);
       if (response.status !== 200 || !response.payload || typeof response.payload !== "object") {
         setMeta((prev) => ({
           ...prev,
           status: "error",
-          message: `Meta unavailable (status=${response.status}, request_id=${response.requestId || "n/a"})`,
+          message: `元数据不可用（status=${response.status}, request_id=${response.requestId || "n/a"}）`,
           warning:
-            "Manual skill input is available. For cross-origin calls, configure both DOCOPS_WEB_CONNECT_SRC and CORS (DOCOPS_ENABLE_CORS=1 + DOCOPS_CORS_ALLOW_ORIGINS).",
+            "你可以手动输入 skill。若跨域调用，请同时配置 DOCOPS_WEB_CONNECT_SRC 与 CORS（DOCOPS_ENABLE_CORS=1 + DOCOPS_CORS_ALLOW_ORIGINS）。",
         }));
         return;
       }
@@ -275,7 +388,7 @@ export default function App() {
         skills: skills.length ? skills : ["meeting_notice"],
         presets: presets.length ? presets : ["quick", "template", "strict"],
         taskTypes: taskTypes.length ? taskTypes : ["meeting_notice"],
-        message: `Meta loaded (request_id=${response.requestId || "n/a"}).`,
+        message: `元数据加载成功（request_id=${response.requestId || "n/a"}）。`,
         warning: "",
       });
 
@@ -288,9 +401,9 @@ export default function App() {
       setMeta((prev) => ({
         ...prev,
         status: "error",
-        message: `Meta request failed: ${String(error)}`,
+        message: `元数据请求失败：${String(error)}`,
         warning:
-          "Manual skill input is available. For cross-origin calls, configure DOCOPS_WEB_CONNECT_SRC and CORS together.",
+          "你可以手动输入 skill。若跨域调用，请同时配置 DOCOPS_WEB_CONNECT_SRC 与 CORS。",
       }));
     }
   };
@@ -304,9 +417,9 @@ export default function App() {
       const content = await file.text();
       const parsed = JSON.parse(content);
       updateSetting("taskJson", JSON.stringify(parsed, null, 2));
-      setRunState("task.json imported");
+      setRunState("task.json 导入成功");
     } catch (error) {
-      setRunState(`task.json import failed: ${String(error)}`);
+      setRunState(`task.json 导入失败：${String(error)}`);
     } finally {
       event.target.value = "";
     }
@@ -315,7 +428,7 @@ export default function App() {
   const exportTaskJson = () => {
     const parsed = safeParseTask(settings.taskJson);
     if (!parsed.ok) {
-      setRunState(`Cannot export: ${parsed.message}`);
+      setRunState(`无法导出：${parsed.message}`);
       return;
     }
     const blob = new Blob([JSON.stringify(parsed.value, null, 2)], { type: "application/json" });
@@ -330,20 +443,20 @@ export default function App() {
   const formatTaskJson = () => {
     const parsed = safeParseTask(settings.taskJson);
     if (!parsed.ok) {
-      setRunState(`Format failed: ${parsed.message}`);
+      setRunState(`格式化失败：${parsed.message}`);
       return;
     }
     updateSetting("taskJson", JSON.stringify(parsed.value, null, 2));
-    setRunState("Task JSON formatted");
+    setRunState("Task JSON 已格式化");
   };
 
   const validateTaskJson = () => {
     const parsed = safeParseTask(settings.taskJson);
     if (!parsed.ok) {
-      setRunState(`Validate failed: ${parsed.message}`);
+      setRunState(`校验失败：${parsed.message}`);
       return;
     }
-    setRunState("Task JSON is valid");
+    setRunState("Task JSON 校验通过");
   };
 
   const copyRequestId = async () => {
@@ -352,18 +465,18 @@ export default function App() {
     }
     try {
       await navigator.clipboard.writeText(result.requestId);
-      setRunState("Request ID copied");
+      setRunState("Request ID 已复制");
     } catch (error) {
-      setRunState(`Copy failed: ${String(error)}`);
+      setRunState(`复制失败：${String(error)}`);
     }
   };
 
   const copyCurl = async () => {
     try {
       await navigator.clipboard.writeText(reproduceCurl);
-      setRunState("curl snippet copied");
+      setRunState("curl 复现命令已复制");
     } catch (error) {
-      setRunState(`Copy failed: ${String(error)}`);
+      setRunState(`复制失败：${String(error)}`);
     }
   };
 
@@ -379,9 +492,9 @@ export default function App() {
     ];
     try {
       await navigator.clipboard.writeText(lines.join("\n"));
-      setRunState("Issue bundle copied");
+      setRunState("问题排查信息已复制");
     } catch (error) {
-      setRunState(`Copy failed: ${String(error)}`);
+      setRunState(`复制失败：${String(error)}`);
     }
   };
 
@@ -401,7 +514,7 @@ export default function App() {
 
     const templateFile = (document.getElementById("template-file") as HTMLInputElement).files?.[0];
     if (!templateFile) {
-      setRunState("Please choose a template .docx file");
+      setRunState("请先选择模板 .docx 文件");
       return;
     }
 
@@ -413,19 +526,19 @@ export default function App() {
 
     const taskType = typeof parsedTask.value.task_type === "string" ? parsedTask.value.task_type : "";
     if (!taskType) {
-      setRunState("task_type in task JSON is required");
+      setRunState("task JSON 中必须包含 task_type");
       return;
     }
     if (settings.skill.trim() !== taskType) {
-      setRunState(`skill (${settings.skill}) must match task_type (${taskType})`);
+      setRunState(`skill（${settings.skill}）必须与 task_type（${taskType}）一致`);
       return;
     }
     if (taskTypeSelect && taskTypeSelect !== taskType) {
-      setRunState(`Selected task type (${taskTypeSelect}) must match task JSON (${taskType})`);
+      setRunState(`所选 task type（${taskTypeSelect}）必须与 task JSON（${taskType}）一致`);
       return;
     }
 
-    setRunState("Running ...");
+    setRunState("正在运行...");
     const started = performance.now();
 
     try {
@@ -453,13 +566,13 @@ export default function App() {
 
       if (apiResult.blob) {
         nextResult.downloadUrl = URL.createObjectURL(apiResult.blob);
-        setRunState("Run completed successfully");
+        setRunState("运行完成（成功返回 ZIP）");
       } else {
         nextResult.errorLines = labelErrorPayload(apiResult.payload);
         nextResult.errorJson = apiResult.payload
           ? JSON.stringify(apiResult.payload, null, 2)
           : "(empty response body)";
-        setRunState(apiResult.status >= 400 ? "Run failed" : "Run completed with JSON payload");
+        setRunState(apiResult.status >= 400 ? "运行失败" : "运行完成（返回 JSON）");
       }
 
       setResult(nextResult);
@@ -480,12 +593,12 @@ export default function App() {
         downloadUrl: "",
         errorLines: [
           `network_error: ${String(error)}`,
-          "Prefer same-origin/proxy in dev.",
-          "For split deployment, configure both DOCOPS_WEB_CONNECT_SRC and CORS (DOCOPS_ENABLE_CORS=1 + DOCOPS_CORS_ALLOW_ORIGINS).",
+          "开发环境建议优先使用同源或代理。",
+          "前后端分离部署时，请同时配置 DOCOPS_WEB_CONNECT_SRC 与 CORS（DOCOPS_ENABLE_CORS=1 + DOCOPS_CORS_ALLOW_ORIGINS）。",
         ],
         errorJson: "",
       });
-      setRunState("Request failed before receiving response");
+      setRunState("请求在收到响应前失败");
       appendHistory({
         timestamp: new Date().toISOString(),
         httpStatus: "network",
@@ -501,7 +614,7 @@ export default function App() {
 
     const templateFile = (document.getElementById("template-file") as HTMLInputElement).files?.[0];
     if (!templateFile) {
-      setRunState("Please choose a template .docx file");
+      setRunState("请先选择模板 .docx 文件");
       return;
     }
 
@@ -513,19 +626,19 @@ export default function App() {
 
     const taskType = typeof parsedTask.value.task_type === "string" ? parsedTask.value.task_type : "";
     if (!taskType) {
-      setRunState("task_type in task JSON is required");
+      setRunState("task JSON 中必须包含 task_type");
       return;
     }
     if (settings.skill.trim() !== taskType) {
-      setRunState(`skill (${settings.skill}) must match task_type (${taskType})`);
+      setRunState(`skill（${settings.skill}）必须与 task_type（${taskType}）一致`);
       return;
     }
     if (taskTypeSelect && taskTypeSelect !== taskType) {
-      setRunState(`Selected task type (${taskTypeSelect}) must match task JSON (${taskType})`);
+      setRunState(`所选 task type（${taskTypeSelect}）必须与 task JSON（${taskType}）一致`);
       return;
     }
 
-    setRunState("Precheck running ...");
+    setRunState("预检中...");
     const started = performance.now();
 
     try {
@@ -551,7 +664,7 @@ export default function App() {
         errorJson: apiResult.payload ? JSON.stringify(apiResult.payload, null, 2) : "(empty response body)",
       });
 
-      setRunState(apiResult.status === 200 ? "Precheck completed" : "Precheck failed");
+      setRunState(apiResult.status === 200 ? "预检完成" : "预检失败");
       appendHistory({
         timestamp: new Date().toISOString(),
         httpStatus: apiResult.status,
@@ -569,12 +682,12 @@ export default function App() {
         downloadUrl: "",
         errorLines: [
           `network_error: ${String(error)}`,
-          "Prefer same-origin/proxy in dev.",
-          "For split deployment, configure both DOCOPS_WEB_CONNECT_SRC and CORS (DOCOPS_ENABLE_CORS=1 + DOCOPS_CORS_ALLOW_ORIGINS).",
+          "开发环境建议优先使用同源或代理。",
+          "前后端分离部署时，请同时配置 DOCOPS_WEB_CONNECT_SRC 与 CORS（DOCOPS_ENABLE_CORS=1 + DOCOPS_CORS_ALLOW_ORIGINS）。",
         ],
         errorJson: "",
       });
-      setRunState("Precheck request failed before receiving response");
+      setRunState("预检请求在收到响应前失败");
       appendHistory({
         timestamp: new Date().toISOString(),
         httpStatus: "network",
@@ -591,13 +704,13 @@ export default function App() {
         <header className="mb-6 rounded-xl bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <h1 className="text-2xl font-bold text-slate-900">DocOps Web Console</h1>
+              <h1 className="text-2xl font-bold text-slate-900">文书工坊（DocOps Web Console）</h1>
               <p className="mt-2 text-sm text-slate-600">
-                Debug/demo UI for <code>/v1/run</code>. Use same-origin or proxy by default.
+                面向普通用户的文书生成控制台：看提示、按步骤操作即可完成文档生成。
               </p>
             </div>
             <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Backend status</p>
+              <p className="text-xs uppercase tracking-wide text-slate-500">后端状态</p>
               <p
                 className={`mt-1 inline-flex items-center gap-2 text-sm font-semibold ${
                   apiHealth === "ok" ? "text-emerald-700" : apiHealth === "down" ? "text-rose-700" : "text-amber-700"
@@ -608,31 +721,46 @@ export default function App() {
                     apiHealth === "ok" ? "bg-emerald-500" : apiHealth === "down" ? "bg-rose-500" : "bg-amber-500"
                   }`}
                 />
-                {apiHealth === "ok" ? "API OK" : apiHealth === "down" ? "API Down" : "Checking..."}
+                {apiHealth === "ok" ? "API 正常" : apiHealth === "down" ? "API 不可用" : "检测中..."}
               </p>
             </div>
           </div>
         </header>
 
-        <section className="mb-4 rounded-xl bg-white p-6 shadow-sm">
-          <h2 className="mb-4 text-lg font-semibold text-slate-900">A. Server Info</h2>
+        <section className="mb-4 rounded-xl border border-indigo-100 bg-indigo-50 p-6 shadow-sm">
+          <h2 className="mb-3 text-lg font-semibold text-indigo-900">新手快速开始（3 步）</h2>
+          <ol className="list-decimal space-y-2 pl-5 text-sm text-indigo-900">
+            <li>点击“加载 Meta”，自动读取后端支持的业务类型和参数。</li>
+            <li>上传模板文件（.docx），再导入 task.json 或点击“填入示例”。</li>
+            <li>先做“预检”，确认无缺失后点击“运行”，下载 ZIP 成果。</li>
+          </ol>
+          <p className="mt-3 text-xs text-indigo-700">
+            不懂技术也没关系：先用示例跑通，再把示例里的文字改成你的真实业务内容。
+          </p>
+        </section>
+
+        <section className="step-card">
+          <h2 className="mb-4 text-lg font-semibold text-slate-900">
+            <span className="step-chip mr-2">步骤 1</span>
+            连接服务
+          </h2>
           <div className="grid gap-4 md:grid-cols-[1fr_auto]">
             <label className="text-sm text-slate-700">
-              API Base URL (empty = same-origin)
+              API 地址（留空表示同源）
               <input
                 className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2"
                 type="text"
                 value={settings.apiBaseUrl}
                 onChange={(event) => updateSetting("apiBaseUrl", event.target.value)}
-                placeholder="http://127.0.0.1:8000"
+                placeholder="例如：http://127.0.0.1:8000"
               />
             </label>
             <div className="flex items-end gap-2">
               <button className="btn" onClick={loadMetaClick} type="button">
-                Load Meta
+                加载 Meta
               </button>
               <a className="link" href={apiUrl(settings.apiBaseUrl, "/v1/meta")} target="_blank" rel="noreferrer">
-                Open /v1/meta
+                打开 /v1/meta
               </a>
             </div>
           </div>
@@ -640,8 +768,22 @@ export default function App() {
           {meta.warning && <p className="mt-1 text-sm text-amber-700">{meta.warning}</p>}
         </section>
 
-        <section className="mb-4 rounded-xl bg-white p-6 shadow-sm">
-          <h2 className="mb-4 text-lg font-semibold text-slate-900">B. Inputs</h2>
+        <section className="step-card">
+          <h2 className="mb-4 text-lg font-semibold text-slate-900">
+            <span className="step-chip mr-2">步骤 2</span>
+            填写内容
+          </h2>
+          <div className="mb-3 flex flex-wrap gap-2">
+            <button type="button" className="btn" onClick={() => applyExample("meeting_notice")}>
+              填入示例：会议通知
+            </button>
+            <button type="button" className="btn" onClick={() => applyExample("training_notice")}>
+              填入示例：培训通知
+            </button>
+            <button type="button" className="btn" onClick={() => applyExample("inspection_record")}>
+              填入示例：检查记录
+            </button>
+          </div>
           <div className="grid gap-4 md:grid-cols-2">
             <label className="text-sm text-slate-700">
               Skill
@@ -651,7 +793,7 @@ export default function App() {
                   value={meta.skills.includes(settings.skill) ? settings.skill : ""}
                   onChange={(event) => updateSetting("skill", event.target.value)}
                 >
-                  {!meta.skills.includes(settings.skill) && <option value="">(manual value)</option>}
+                  {!meta.skills.includes(settings.skill) && <option value="">（手动输入值）</option>}
                   {meta.skills.map((skill) => (
                     <option key={skill} value={skill}>
                       {skill}
@@ -668,13 +810,13 @@ export default function App() {
             </label>
 
             <label className="text-sm text-slate-700">
-              Task Type (optional selector)
+              Task Type（可选下拉）
               <select
                 className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2"
                 value={taskTypeSelect}
                 onChange={(event) => setTaskTypeSelect(event.target.value)}
               >
-                <option value="">(from task JSON)</option>
+                <option value="">（以 task JSON 为准）</option>
                 {meta.taskTypes.map((taskType) => (
                   <option key={taskType} value={taskType}>
                     {taskType}
@@ -704,11 +846,11 @@ export default function App() {
                 checked={settings.strict}
                 onChange={(event) => updateSetting("strict", event.target.checked)}
               />
-              Strict mode
+              严格模式（Strict）
             </label>
 
             <label className="text-sm text-slate-700">
-              Template (.docx)
+              模板文件（.docx）
               <input
                 id="template-file"
                 className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2"
@@ -723,12 +865,12 @@ export default function App() {
                 checked={settings.exportSuggestedPolicy}
                 onChange={(event) => updateSetting("exportSuggestedPolicy", event.target.checked)}
               />
-              Export suggested policy
+              导出建议策略
             </label>
           </div>
 
           <label className="mt-4 block text-sm text-slate-700">
-            Task JSON
+            任务 JSON
             <textarea
               className="mt-1 h-52 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
               value={settings.taskJson}
@@ -738,23 +880,23 @@ export default function App() {
 
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <label className="btn cursor-pointer">
-              Import task.json
+              导入 task.json
               <input type="file" accept=".json,application/json" className="hidden" onChange={importTaskJson} />
             </label>
             <button type="button" className="btn" onClick={exportTaskJson}>
-              Export task.json
+              导出 task.json
             </button>
             <button type="button" className="btn" onClick={formatTaskJson}>
-              Format JSON
+              格式化 JSON
             </button>
             <button type="button" className="btn" onClick={validateTaskJson}>
-              Validate
+              校验 JSON
             </button>
-            <span className="text-xs text-slate-500">Template file is not persisted by browser storage.</span>
+            <span className="text-xs text-slate-500">浏览器不会保存模板文件，请每次重新选择。</span>
           </div>
 
           <label className="mt-4 block text-sm text-slate-700">
-            policy_yaml (optional)
+            policy_yaml（可选）
             <textarea
               className="mt-1 h-28 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
               value={settings.policyYaml}
@@ -763,14 +905,20 @@ export default function App() {
           </label>
         </section>
 
-        <section className="mb-4 rounded-xl bg-white p-6 shadow-sm">
-          <h2 className="mb-2 text-lg font-semibold text-slate-900">C. Run / Precheck</h2>
-          <div className="flex items-center gap-3">
-            <button className="btn-primary" onClick={runClick} type="button">
-              Run
+        <section className="step-card">
+          <h2 className="mb-2 text-lg font-semibold text-slate-900">
+            <span className="step-chip mr-2">步骤 3</span>
+            执行与预检
+          </h2>
+          <p className="mb-3 text-sm text-slate-600">
+            预检不会生成文件，只检查模板和字段是否可用；运行才会真正生成文档并返回 ZIP。
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <button className="btn-primary-lg" onClick={runClick} type="button">
+              运行（Run）
             </button>
-            <button className="btn" onClick={precheckClick} type="button">
-              Precheck
+            <button className="btn-lg" onClick={precheckClick} type="button">
+              预检（Precheck）
             </button>
             <span className="text-sm text-slate-600">{runState}</span>
           </div>
@@ -778,14 +926,29 @@ export default function App() {
 
         <section
           id="result-block"
-          className={`mb-4 rounded-xl bg-white p-6 shadow-sm transition ${
+          className={`step-card transition ${
             resultHighlight ? "ring-2 ring-indigo-400 ring-offset-2" : ""
           }`}
         >
-          <h2 className="mb-2 text-lg font-semibold text-slate-900">D. Result</h2>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h2 className="text-lg font-semibold text-slate-900">D. 执行结果</h2>
+            <span
+              className={
+                resultTone === "success"
+                  ? "status-pill-success"
+                  : resultTone === "warning"
+                    ? "status-pill-warning"
+                    : resultTone === "error"
+                      ? "status-pill-error"
+                      : "status-pill-neutral"
+              }
+            >
+              {resultToneLabel(resultTone)}
+            </span>
+          </div>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <div>
-              <p className="label">HTTP status</p>
+              <p className="label">HTTP 状态码</p>
               <p className="value">{result.status}</p>
             </div>
             <div>
@@ -793,12 +956,12 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <input className="input-lite" readOnly value={result.requestId} />
                 <button className="btn" onClick={copyRequestId} type="button">
-                  Copy
+                  复制
                 </button>
               </div>
             </div>
             <div>
-              <p className="label">Duration (ms)</p>
+              <p className="label">耗时（ms）</p>
               <p className="value">{result.durationMs ?? "-"}</p>
             </div>
             <div>
@@ -806,42 +969,49 @@ export default function App() {
               <p className="value">{result.exitCode}</p>
             </div>
           </div>
+          <p className="mt-2 text-xs text-slate-600">{explainExitCode(result.exitCode)}</p>
+          {resultTone === "warning" && (
+            <p className="mt-1 text-xs text-amber-700">建议先根据详情补字段或修模板，再重新预检/运行。</p>
+          )}
+          {resultTone === "error" && (
+            <p className="mt-1 text-xs text-rose-700">请求失败，请先检查 API 地址、网络连通性和错误详情。</p>
+          )}
 
           {result.downloadUrl && (
             <div className="mt-4 rounded-md bg-emerald-50 p-3 text-emerald-700">
-              <p className="font-medium">ZIP response received.</p>
+              <p className="font-medium">已收到 ZIP 响应。</p>
               <a className="link" href={result.downloadUrl} download="docops_outputs.zip">
-                Download ZIP
+                下载 ZIP
               </a>
             </div>
           )}
 
           {result.errorLines.length > 0 && (
             <div className="mt-4 rounded-md bg-rose-50 p-3 text-rose-800">
-              <p className="font-medium">Response details</p>
+              <p className="font-medium">响应详情</p>
               <pre className="pre">{result.errorLines.join("\n")}</pre>
               <pre className="pre">{result.errorJson}</pre>
             </div>
           )}
 
           <div className="mt-4">
-            <h3 className="text-base font-semibold text-slate-900">Reproduce (curl)</h3>
+            <h3 className="text-base font-semibold text-slate-900">复现命令（curl）</h3>
             <div className="mt-2 flex items-center gap-2">
               <button className="btn" onClick={copyCurl} type="button">
-                Copy curl
+                复制 curl
               </button>
               <button className="btn" onClick={copyIssueBundle} type="button">
-                Copy as issue bundle
+                复制问题排查信息
               </button>
             </div>
             <pre className="pre mt-2">{reproduceCurl}</pre>
           </div>
         </section>
 
-        <section className="rounded-xl bg-white p-6 shadow-sm">
-          <h2 className="mb-2 text-lg font-semibold text-slate-900">E. Recent History</h2>
+        <section className="step-card">
+          <h2 className="mb-2 text-lg font-semibold text-slate-900">E. 最近请求记录</h2>
           {history.length === 0 ? (
-            <p className="text-sm text-slate-600">No recent runs.</p>
+            <p className="text-sm text-slate-600">暂无最近请求记录。</p>
           ) : (
             <ul className="space-y-2">
               {history.map((entry, idx) => (
@@ -857,10 +1027,10 @@ export default function App() {
                     }}
                   >
                     <span>{entry.timestamp}</span>
-                    <span>status={entry.httpStatus}</span>
-                    <span>duration={entry.durationMs}ms</span>
-                    <span>request_id={entry.requestId || "-"}</span>
-                    <span>base={entry.baseUrl || "(same-origin)"}</span>
+                    <span>状态={entry.httpStatus}</span>
+                    <span>耗时={entry.durationMs}ms</span>
+                    <span>请求ID={entry.requestId || "-"}</span>
+                    <span>地址={entry.baseUrl || "（同源）"}</span>
                   </button>
                 </li>
               ))}
